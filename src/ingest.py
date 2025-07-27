@@ -233,13 +233,15 @@ class DataIngestion:
         """Extract metrics using GPT-4."""
         try:
             prompt = f"""
-            You are analyzing social value data. Extract measurable impact metrics from this data.
-            
-            Data preview:
+            You are analyzing social value data from a spreadsheet. Extract measurable impact metrics with PRECISE CITATIONS.
+
+            Data preview (first 10 rows):
             {data_sample}
-            
+
             {column_info}
-            
+
+            CRITICAL: For each metric, you MUST provide exact source location details for verification.
+
             Extract social value metrics in this exact JSON format:
             [
                 {{
@@ -248,45 +250,100 @@ class DataIngestion:
                     "metric_unit": "hours",
                     "metric_category": "community_engagement",
                     "context_description": "Total volunteer hours donated to local charities",
-                    "confidence_score": 0.95
+                    "confidence_score": 0.95,
+                    "source_sheet_name": "Sheet1",
+                    "source_column_name": "Volunteer Hours",
+                    "source_column_index": 3,
+                    "source_row_index": 12,
+                    "source_cell_reference": "D13",
+                    "source_formula": "SUM(D2:D12)"
                 }}
             ]
-            
-            Focus on:
-            - Volunteering hours, donations, charitable giving
-            - Environmental metrics (carbon, waste, energy)
-            - Community engagement, local procurement
-            - Employment and skills development
-            - Health and wellbeing initiatives
-            
-            Return only valid JSON array. If no clear metrics found, return empty array [].
+
+            EXTRACTION GUIDELINES:
+            1. Focus on these social value categories:
+               - Volunteering hours, donations, charitable giving
+               - Environmental metrics (carbon, waste, energy)
+               - Community engagement, local procurement
+               - Employment and skills development
+               - Health and wellbeing initiatives
+
+            2. CITATION REQUIREMENTS (MANDATORY):
+               - source_column_name: Exact column header name
+               - source_column_index: Zero-based column index (A=0, B=1, C=2, etc.)
+               - source_row_index: Zero-based row index (header=0, first data=1, etc.)
+               - source_cell_reference: Excel-style reference (A1, B5, etc.)
+               - source_formula: If aggregated (SUM, AVERAGE), provide formula
+
+            3. VALUE EXTRACTION:
+               - Extract exact numeric values as shown in cells
+               - If summing multiple cells, provide the SUM formula
+               - If calculating average, provide AVERAGE formula
+               - Round to appropriate precision (2 decimal places max)
+
+            4. CONFIDENCE SCORING:
+               - 0.9-1.0: Exact cell reference with clear numeric value
+               - 0.7-0.8: Calculated from multiple cells with formula
+               - 0.5-0.6: Inferred from context or partial data
+               - Below 0.5: Don't include the metric
+
+            EXAMPLE SCENARIOS:
+            - Single cell value: "source_cell_reference": "B5", "source_formula": null
+            - Sum of column: "source_cell_reference": "B15", "source_formula": "SUM(B2:B14)"
+            - Average: "source_cell_reference": "C10", "source_formula": "AVERAGE(C2:C9)"
+
+            Return only valid JSON array. If no clear metrics with precise citations found, return empty array [].
+            NEVER make up cell references - only include metrics you can precisely locate.
             """
-            
+
             response = self.openai_client.chat.completions.create(
                 model="gpt-4",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=1500
+                max_tokens=2000
             )
-            
+
             result_text = response.choices[0].message.content.strip()
-            
+
             # Parse JSON response
             try:
-                metrics = json.loads(result_text)
+                # Clean the response - sometimes GPT-4 adds markdown formatting
+                cleaned_response = result_text.strip()
+                if cleaned_response.startswith('```json'):
+                    cleaned_response = cleaned_response.split('```json')[1]
+                if cleaned_response.endswith('```'):
+                    cleaned_response = cleaned_response.split('```')[0]
+                cleaned_response = cleaned_response.strip()
+                
+                logger.debug(f"GPT-4 raw response: {result_text[:500]}...")
+                logger.debug(f"Cleaned response: {cleaned_response[:500]}...")
+                
+                metrics = json.loads(cleaned_response)
                 if isinstance(metrics, list):
-                    # Add source_id to each metric
+                    # Add source_id to each metric and validate citations
+                    validated_metrics = []
                     for metric in metrics:
                         metric['source_id'] = source_id
-                    return metrics
+                        
+                        # Validate that required citation fields are present
+                        required_fields = ['source_column_name', 'source_column_index', 
+                                         'source_row_index', 'source_cell_reference']
+                        
+                        if all(field in metric and metric[field] is not None for field in required_fields):
+                            validated_metrics.append(metric)
+                        else:
+                            logger.warning(f"Metric '{metric.get('metric_name')}' missing citation fields - skipped")
+                    
+                    logger.info(f"GPT-4 extracted {len(validated_metrics)} metrics with citations (from {len(metrics)} total)")
+                    return validated_metrics
                 else:
                     logger.warning("GPT-4 returned non-list response")
                     return []
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse GPT-4 JSON response: {e}")
-                logger.debug(f"Raw response: {result_text}")
+                logger.error(f"Raw response: {result_text}")
                 return []
-                
+
         except Exception as e:
             logger.error(f"Error with GPT-4 extraction: {e}")
             return []
@@ -356,18 +413,20 @@ class DataIngestion:
         if not metrics:
             logger.warning("No metrics to store")
             return True
-        
+
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                
+
                 for metric in metrics:
-                    # Insert metric
+                    # Insert metric with enhanced citation fields
                     cursor.execute("""
                         INSERT INTO impact_metrics 
                         (source_id, metric_name, metric_value, metric_unit, metric_category,
-                         extraction_confidence, context_description)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                         extraction_confidence, context_description,
+                         source_sheet_name, source_column_name, source_column_index,
+                         source_row_index, source_cell_reference, source_formula)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         metric['source_id'],
                         metric['metric_name'],
@@ -375,19 +434,25 @@ class DataIngestion:
                         metric['metric_unit'],
                         metric['metric_category'],
                         metric.get('confidence_score', 0.7),
-                        metric.get('context_description', '')
+                        metric.get('context_description', ''),
+                        metric.get('source_sheet_name'),
+                        metric.get('source_column_name'),
+                        metric.get('source_column_index'),
+                        metric.get('source_row_index'),
+                        metric.get('source_cell_reference'),
+                        metric.get('source_formula')
                     ))
-                    
+
                     metric_id = cursor.lastrowid
-                    
+
                     # Create embedding if model is available
                     if self.embedding_model:
                         self._create_embedding(metric, metric_id, cursor)
-                
+
                 conn.commit()
-                logger.info(f"Stored {len(metrics)} metrics successfully")
+                logger.info(f"Stored {len(metrics)} metrics with citations successfully")
                 return True
-                
+
         except Exception as e:
             logger.error(f"Error storing metrics: {e}")
             return False

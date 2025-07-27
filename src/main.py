@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import logging
 from typing import Optional
+import sqlite3
 
 # Add src to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__)))
@@ -131,12 +132,109 @@ class ImpactOSCLI:
                     if file_path.is_file():
                         print(f"  - {file_path.name} ({file_path.stat().st_size} bytes)")
             
-            # TODO: Query database for ingested sources
+            # Query database for ingested sources
             print(f"\n=== Ingested Sources ===")
-            print("  (Database query not yet implemented)")
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT s.filename, s.processed_timestamp, s.processing_status,
+                               COUNT(im.id) as metric_count,
+                               AVG(im.verification_accuracy) as avg_accuracy
+                        FROM sources s
+                        LEFT JOIN impact_metrics im ON s.id = im.source_id
+                        GROUP BY s.id
+                        ORDER BY s.processed_timestamp DESC
+                    """)
+                    
+                    sources = cursor.fetchall()
+                    if sources:
+                        for source in sources:
+                            accuracy = source['avg_accuracy'] or 0.0
+                            print(f"  - {source['filename']} ({source['metric_count']} metrics, {accuracy:.1%} accuracy)")
+                    else:
+                        print("  (No sources ingested yet)")
+            except Exception as e:
+                logger.debug(f"Error querying sources: {e}")
+                print("  (Database query not yet implemented)")
             
         except Exception as e:
             logger.error(f"Error listing data: {e}")
+    
+    def verify_data(self, target: str):
+        """Verify data accuracy."""
+        try:
+            from verify import verify_all_data, verify_metric
+            
+            if target.lower() == 'all':
+                print("\n🔍 Verifying all metrics against source files...")
+                summary = verify_all_data(self.db_path)
+                
+                if 'error' in summary:
+                    print(f"❌ Verification failed: {summary['error']}")
+                    return
+                
+                print(f"\n📊 Verification Results:")
+                print(f"  Total metrics: {summary['total']}")
+                print(f"  ✅ Verified: {summary['verified']}")
+                print(f"  ❌ Failed: {summary['failed']}")
+                print(f"  🎯 Overall accuracy: {summary['accuracy']:.1%}")
+                print(f"  📈 Verification rate: {summary['verification_rate']:.1%}")
+                
+                if summary['accuracy'] < 0.8:
+                    print("\n⚠️  Low accuracy detected! Consider:")
+                    print("    - Improving GPT-4 extraction prompts")
+                    print("    - Adding more precise citation requirements")
+                    print("    - Checking data quality in source files")
+                
+            else:
+                try:
+                    metric_id = int(target)
+                    print(f"\n🔍 Verifying metric {metric_id}...")
+                    result = verify_metric(metric_id, self.db_path)
+                    
+                    if 'error' in result:
+                        print(f"❌ Verification failed: {result['error']}")
+                        return
+                    
+                    status = "✅ Verified" if result['verified'] else "❌ Failed"
+                    print(f"  {status} (accuracy: {result['accuracy']:.1%})")
+                    print(f"  Notes: {result['notes']}")
+                    
+                except ValueError:
+                    print(f"❌ Invalid metric ID: {target}")
+                    
+        except ImportError:
+            print("❌ Verification module not available")
+        except Exception as e:
+            logger.error(f"Error during verification: {e}")
+            print(f"❌ Verification error: {e}")
+    
+    def get_verification_summary(self) -> str:
+        """Get verification accuracy summary."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        COUNT(*) as total,
+                        SUM(CASE WHEN verification_status = 'verified' THEN 1 ELSE 0 END) as verified,
+                        AVG(verification_accuracy) as avg_accuracy
+                    FROM impact_metrics
+                    WHERE verification_status IS NOT NULL
+                """)
+                
+                result = cursor.fetchone()
+                if result and result['total'] > 0:
+                    accuracy = result['avg_accuracy'] or 0.0
+                    return f"{result['verified']}/{result['total']} metrics verified ({accuracy:.1%} accuracy)"
+                else:
+                    return "No verification data available"
+                    
+        except Exception as e:
+            return f"Verification error: {e}"
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -148,6 +246,8 @@ def create_parser() -> argparse.ArgumentParser:
 Examples:
   %(prog)s ingest data/TakingCare_Payroll_Synthetic_Data.xlsx
   %(prog)s query "How much was donated to charity last year?"
+  %(prog)s verify all
+  %(prog)s verify 5
   %(prog)s schema
   %(prog)s list
         """
@@ -169,6 +269,11 @@ Examples:
         dest='file_type',
         help='Override file type detection'
     )
+    ingest_parser.add_argument(
+        '--verify',
+        action='store_true',
+        help='Run verification after ingestion'
+    )
     
     # Query command
     query_parser = subparsers.add_parser(
@@ -178,6 +283,21 @@ Examples:
     query_parser.add_argument(
         'question',
         help='Natural language question about the data'
+    )
+    query_parser.add_argument(
+        '--show-accuracy',
+        action='store_true',
+        help='Show verification accuracy in results'
+    )
+    
+    # Verify command
+    verify_parser = subparsers.add_parser(
+        'verify',
+        help='Verify extracted metrics against source data'
+    )
+    verify_parser.add_argument(
+        'target',
+        help='Verification target: "all" for all metrics, or specific metric ID'
     )
     
     # Schema command
@@ -210,11 +330,25 @@ def main():
     try:
         if args.command == 'ingest':
             success = cli.ingest_data(args.file_path, args.file_type)
+            
+            # Run verification if requested
+            if args.verify and success:
+                logger.info("Running verification after ingestion...")
+                cli.verify_data('all')
+            
             sys.exit(0 if success else 1)
             
         elif args.command == 'query':
             answer = cli.query_data(args.question)
             print(f"\nAnswer: {answer}")
+            
+            # Show verification summary if requested
+            if args.show_accuracy:
+                accuracy_summary = cli.get_verification_summary()
+                print(f"\nData Accuracy: {accuracy_summary}")
+            
+        elif args.command == 'verify':
+            cli.verify_data(args.target)
             
         elif args.command == 'schema':
             cli.show_schema_info()

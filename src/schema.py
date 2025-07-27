@@ -112,6 +112,22 @@ class DatabaseSchema:
                 extraction_confidence REAL,
                 context_description TEXT,
                 raw_text TEXT,
+                
+                -- Enhanced citation fields for precise source tracking
+                source_sheet_name TEXT,
+                source_column_name TEXT,
+                source_column_index INTEGER,
+                source_row_index INTEGER,
+                source_cell_reference TEXT,
+                source_formula TEXT,
+                
+                -- Verification and accuracy fields
+                verification_status TEXT DEFAULT 'pending',  -- pending, verified, failed, skipped
+                verification_timestamp TIMESTAMP,
+                verified_value REAL,
+                verification_accuracy REAL,  -- 0.0 to 1.0
+                verification_notes TEXT,
+                
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (source_id) REFERENCES sources (id) ON DELETE CASCADE
             )
@@ -125,6 +141,10 @@ class DatabaseSchema:
         cursor.execute("""
             CREATE INDEX IF NOT EXISTS idx_impact_metrics_name 
             ON impact_metrics (metric_name)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_impact_metrics_verification 
+            ON impact_metrics (verification_status)
         """)
     
     def _create_commitments_table(self, cursor: sqlite3.Cursor) -> None:
