@@ -169,17 +169,20 @@ class DatabaseSchema:
         """Create framework_mappings table for mapping metrics to frameworks."""
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS framework_mappings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                metric_id INTEGER NOT NULL,
-                framework_id INTEGER NOT NULL,
-                framework_code TEXT,
-                framework_description TEXT,
-                mapping_confidence REAL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (metric_id) REFERENCES impact_metrics (id) ON DELETE CASCADE,
-                FOREIGN KEY (framework_id) REFERENCES frameworks (id) ON DELETE CASCADE,
-                UNIQUE(metric_id, framework_id, framework_code)
-            )
+                impact_metric_id INTEGER,
+                framework_id INTEGER,
+                category TEXT,
+                
+                -- Enhanced framework mapping fields
+                framework_name TEXT NOT NULL,
+                framework_category TEXT NOT NULL,
+                mapping_confidence REAL DEFAULT 0.8,
+                mapping_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                
+                PRIMARY KEY (impact_metric_id, framework_id),
+                FOREIGN KEY (impact_metric_id) REFERENCES impact_metrics(id),
+                FOREIGN KEY (framework_id) REFERENCES frameworks(id)
+            );
         """)
     
     def _create_embeddings_table(self, cursor: sqlite3.Cursor) -> None:

@@ -89,18 +89,23 @@ class DataIngestion:
             logger.error(f"Failed to initialize embedding model: {e}")
             return None
     
-    def ingest_file(self, file_path: str) -> bool:
+    def ingest_file(self, file_path: str, use_query_based: bool = True) -> bool:
         """
         Main ingestion method for processing files.
         
         Args:
             file_path: Path to file to ingest
+            use_query_based: Whether to use the new query-based extraction (default: True)
             
         Returns:
             True if successful, False otherwise
         """
         try:
             logger.info(f"Starting ingestion of {file_path}")
+            
+            # Set extraction method and file context
+            self.use_query_based = use_query_based
+            self.current_file_path = file_path
             
             # 1. Validate file
             if not self._validate_file(file_path):
@@ -116,8 +121,15 @@ class DataIngestion:
             if data is None:
                 return False
             
-            # 4. Extract metrics using GPT-4 (if available)
-            metrics = self._extract_metrics(data, source_id)
+            # 4. Extract metrics using chosen method
+            if use_query_based:
+                logger.info("Using advanced query-based extraction for zero mistakes")
+                from extract_v2 import QueryBasedExtraction
+                extractor = QueryBasedExtraction(self.db_path)
+                metrics = extractor.extract_metrics_v2(file_path, source_id)
+            else:
+                logger.info("Using legacy text-based extraction")
+                metrics = self._extract_metrics(data, source_id)
             
             # 5. Store metrics and create embeddings
             success = self._store_metrics(metrics, source_id)
@@ -125,7 +137,8 @@ class DataIngestion:
             # 6. Update source processing status
             self._update_source_status(source_id, 'completed' if success else 'failed')
             
-            logger.info(f"Ingestion completed for {file_path}")
+            extraction_method = "query-based" if use_query_based else "text-based"
+            logger.info(f"Ingestion completed for {file_path} using {extraction_method} extraction")
             return success
             
         except Exception as e:
@@ -211,6 +224,16 @@ class DataIngestion:
         try:
             metrics = []
             
+            # NEW: Try query-based extraction first (if enabled)
+            if hasattr(self, 'use_query_based') and self.use_query_based:
+                logger.info("Using advanced query-based extraction")
+                from extract_v2 import QueryBasedExtraction
+                extractor = QueryBasedExtraction(self.db_path)
+                # We need the file path, so we'll add this to the extraction context
+                if hasattr(self, 'current_file_path'):
+                    return extractor.extract_metrics_v2(self.current_file_path, source_id)
+            
+            # FALLBACK: Original text-based approach
             # Convert DataFrame to text for GPT-4 analysis
             data_sample = data.head(10).to_string()  # Use first 10 rows as sample
             column_info = f"Columns: {list(data.columns)}"

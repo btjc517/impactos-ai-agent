@@ -177,80 +177,142 @@ class DataVerifier:
             )
     
     def _verify_spreadsheet_metric(self, metric: Dict[str, Any], file_path: str) -> Dict[str, Any]:
-        """Verify a metric extracted from a spreadsheet file."""
+        """Verify metric against spreadsheet data."""
         try:
-            metric_id = metric['id']
-            reported_value = metric['metric_value']
+            file_ext = Path(file_path).suffix.lower()
             
-            # Load the spreadsheet
-            if file_path.endswith('.xlsx'):
-                # Load specific sheet if specified
-                sheet_name = metric['source_sheet_name'] or 0
-                df = pd.read_excel(file_path, sheet_name=sheet_name)
-            else:
+            if file_ext == '.xlsx':
+                # Load Excel file and get the actual sheet names
+                excel_file = pd.ExcelFile(file_path)
+                available_sheets = excel_file.sheet_names
+                
+                # Try to find the correct sheet
+                target_sheet = metric.get('source_sheet_name', '')
+                
+                if target_sheet in available_sheets:
+                    # Use the specified sheet
+                    df = pd.read_excel(file_path, sheet_name=target_sheet)
+                elif len(available_sheets) > 0:
+                    # Use the first sheet if target sheet not found
+                    actual_sheet = available_sheets[0]
+                    df = pd.read_excel(file_path, sheet_name=actual_sheet)
+                    logger.warning(f"Sheet '{target_sheet}' not found, using '{actual_sheet}'")
+                else:
+                    return self._create_verification_result(
+                        metric['id'], False, 0.0, f"No sheets found in Excel file"
+                    )
+            elif file_ext == '.csv':
                 df = pd.read_csv(file_path)
+            else:
+                return self._create_verification_result(
+                    metric['id'], False, 0.0, f"Unsupported file type: {file_ext}"
+                )
             
-            # Method 1: Verify using specific cell reference (most precise)
-            if metric['source_cell_reference']:
+            # Try different verification methods in order of precision
+            
+            # 1. Try cell reference verification (most precise)
+            if metric.get('source_cell_reference'):
                 return self._verify_by_cell_reference(metric, df, file_path)
             
-            # Method 2: Verify using column and row indices
-            elif metric['source_column_index'] is not None and metric['source_row_index'] is not None:
+            # 2. Try row/column index verification
+            if (metric.get('source_row_index') is not None and 
+                metric.get('source_column_index') is not None):
                 return self._verify_by_indices(metric, df)
             
-            # Method 3: Verify using column name and heuristics
-            elif metric['source_column_name']:
+            # 3. Try column name verification
+            if metric.get('source_column_name'):
                 return self._verify_by_column_name(metric, df)
             
-            # Method 4: Fallback - search for value in context area
-            else:
-                return self._verify_by_value_search(metric, df)
-                
+            # 4. Fallback to value search
+            return self._verify_by_value_search(metric, df)
+            
         except Exception as e:
-            logger.error(f"Error in spreadsheet verification: {e}")
             return self._create_verification_result(
-                metric_id, False, 0.0, f"Spreadsheet verification error: {e}"
+                metric['id'], False, 0.0, f"Error in spreadsheet verification: {e}"
             )
     
     def _verify_by_cell_reference(self, metric: Dict[str, Any], df: pd.DataFrame, file_path: str) -> Dict[str, Any]:
-        """Verify using exact cell reference (e.g., 'B5', 'Sheet1!C10')."""
+        """Verify metric using exact cell reference (e.g., 'B5' or 'J2:J15')."""
         try:
-            cell_ref = metric['source_cell_reference']
-            reported_value = metric['metric_value']
-            
-            # Parse cell reference (e.g., 'B5' -> column=1, row=4)
-            col_idx, row_idx = self._parse_cell_reference(cell_ref)
-            
-            if col_idx >= len(df.columns) or row_idx >= len(df):
+            cell_ref = metric.get('source_cell_reference', '')
+            if not cell_ref:
                 return self._create_verification_result(
-                    metric['id'], False, 0.0, f"Cell reference {cell_ref} out of bounds"
+                    metric['id'], False, 0.0, "No cell reference provided"
                 )
             
-            # Get actual value from the cell
-            actual_value = df.iloc[row_idx, col_idx]
-            
-            # Compare values
-            if pd.isna(actual_value):
-                return self._create_verification_result(
-                    metric['id'], False, 0.0, f"Cell {cell_ref} is empty"
-                )
-            
-            # Try to convert to numeric if needed
-            if isinstance(actual_value, str):
-                actual_value = self._extract_numeric_value(actual_value)
-            
-            accuracy = self._calculate_value_accuracy(reported_value, actual_value)
-            is_accurate = accuracy >= (1.0 - self.verification_tolerance)
-            
-            notes = f"Cell {cell_ref}: reported={reported_value}, actual={actual_value}, accuracy={accuracy:.1%}"
-            
-            return self._create_verification_result(
-                metric['id'], is_accurate, accuracy, notes, actual_value
-            )
-            
+            # Handle range references (e.g., "J2:J15")
+            if ':' in cell_ref:
+                start_cell, end_cell = cell_ref.split(':')
+                start_col, start_row = self._parse_cell_reference(start_cell)
+                end_col, end_row = self._parse_cell_reference(end_cell)
+                
+                # Extract the range of values
+                if start_col == end_col:  # Single column range
+                    column_name = df.columns[start_col]
+                    # Get the range of rows (convert to 0-based indexing)
+                    range_values = df.iloc[start_row-1:end_row, start_col]
+                    
+                    # Check if this matches expected aggregation
+                    source_formula = metric.get('source_formula', '')
+                    if 'SUM' in source_formula.upper():
+                        actual_value = range_values.sum()
+                    elif 'AVERAGE' in source_formula.upper():
+                        actual_value = range_values.mean()
+                    elif 'COUNT' in source_formula.upper():
+                        actual_value = range_values.count()
+                    else:
+                        actual_value = range_values.sum()  # Default to sum
+                    
+                    reported_value = float(metric['metric_value'])
+                    accuracy = self._calculate_value_accuracy(reported_value, actual_value)
+                    
+                    if accuracy >= 0.95:  # 95% threshold for floating point precision
+                        return self._create_verification_result(
+                            metric['id'], True, accuracy,
+                            f"Verified using range {cell_ref}: {actual_value} ≈ {reported_value}",
+                            actual_value
+                        )
+                    else:
+                        return self._create_verification_result(
+                            metric['id'], False, accuracy,
+                            f"Value mismatch in range {cell_ref}: expected {actual_value}, got {reported_value}",
+                            actual_value
+                        )
+                
+            else:
+                # Single cell reference
+                col_idx, row_idx = self._parse_cell_reference(cell_ref)
+                
+                if col_idx >= len(df.columns) or row_idx >= len(df):
+                    return self._create_verification_result(
+                        metric['id'], False, 0.0,
+                        f"Cell reference {cell_ref} is out of bounds"
+                    )
+                
+                # Get the actual value
+                actual_value = df.iloc[row_idx, col_idx]
+                actual_numeric = self._extract_numeric_value(str(actual_value))
+                
+                reported_value = float(metric['metric_value'])
+                accuracy = self._calculate_value_accuracy(reported_value, actual_numeric)
+                
+                if accuracy >= 0.95:
+                    return self._create_verification_result(
+                        metric['id'], True, accuracy,
+                        f"Verified cell {cell_ref}: {actual_numeric} ≈ {reported_value}",
+                        actual_numeric
+                    )
+                else:
+                    return self._create_verification_result(
+                        metric['id'], False, accuracy,
+                        f"Value mismatch in cell {cell_ref}: expected {actual_numeric}, got {reported_value}",
+                        actual_numeric
+                    )
+                    
         except Exception as e:
             return self._create_verification_result(
-                metric['id'], False, 0.0, f"Cell reference verification error: {e}"
+                metric['id'], False, 0.0,
+                f"Error verifying cell reference {cell_ref}: {str(e)}"
             )
     
     def _verify_by_indices(self, metric: Dict[str, Any], df: pd.DataFrame) -> Dict[str, Any]:

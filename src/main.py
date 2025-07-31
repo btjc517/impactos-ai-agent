@@ -180,9 +180,11 @@ class ImpactOSCLI:
                 print(f"  ✅ Verified: {summary['verified']}")
                 print(f"  ❌ Failed: {summary['failed']}")
                 print(f"  🎯 Overall accuracy: {summary['accuracy']:.1%}")
-                print(f"  📈 Verification rate: {summary['verification_rate']:.1%}")
                 
-                if summary['accuracy'] < 0.8:
+                if 'verification_rate' in summary:
+                    print(f"  📈 Verification rate: {summary['verification_rate']:.1%}")
+                
+                if summary['accuracy'] < 0.8 and summary['total'] > 0:
                     print("\n⚠️  Low accuracy detected! Consider:")
                     print("    - Improving GPT-4 extraction prompts")
                     print("    - Adding more precise citation requirements")
@@ -235,6 +237,27 @@ class ImpactOSCLI:
                     
         except Exception as e:
             return f"Verification error: {e}"
+
+    def show_framework_report(self, args):
+        """Show framework mapping report."""
+        try:
+            print(f"\n🎯 Framework Mapping Report")
+            print("=" * 50)
+            
+            if args.apply:
+                print("Applying framework mappings...")
+                from frameworks import apply_framework_mappings
+                mappings = apply_framework_mappings(self.db_path)
+                print(f"✅ Applied mappings: {mappings}")
+                print()
+            
+            from frameworks import get_framework_report
+            report = get_framework_report(self.db_path)
+            print(report)
+            
+        except Exception as e:
+            print(f"❌ Error generating framework report: {e}")
+            return False
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -311,7 +334,13 @@ Examples:
         'list',
         help='List available data files and sources'
     )
-    
+
+    # Add frameworks command
+    frameworks_parser = subparsers.add_parser('frameworks', 
+                                              help='Generate framework mapping report')
+    frameworks_parser.add_argument('--apply', action='store_true',
+                                  help='Apply framework mappings to all metrics')
+        
     return parser
 
 
@@ -348,13 +377,19 @@ def main():
                 print(f"\nData Accuracy: {accuracy_summary}")
             
         elif args.command == 'verify':
-            cli.verify_data(args.target)
+            if args.target:
+                cli.verify_data(args.target)
+            else:
+                cli.verify_data('all')
             
         elif args.command == 'schema':
             cli.show_schema_info()
             
         elif args.command == 'list':
             cli.list_available_data()
+            
+        elif args.command == 'frameworks':
+            cli.show_framework_report(args)
             
         else:
             parser.print_help()
