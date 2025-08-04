@@ -21,6 +21,8 @@ from openai import OpenAI
 
 # Local imports
 from schema import DatabaseSchema
+from vector_search import FAISSVectorSearch
+from enhanced_loader import EnhancedFileLoader, load_file_enhanced
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -30,12 +32,14 @@ logger = logging.getLogger(__name__)
 class DataIngestion:
     """Handles data ingestion from XLSX/CSV files into the system."""
     
-    def __init__(self, db_path: str = "db/impactos.db"):
+    def __init__(self, db_path: str = "db/impactos.db", use_enhanced_loader: bool = True, use_polars: bool = True):
         """
         Initialize ingestion pipeline.
         
         Args:
             db_path: Path to SQLite database
+            use_enhanced_loader: Whether to use enhanced file loading with bulletproof accuracy
+            use_polars: Whether to use Polars for type safety (when enhanced loader is enabled)
         """
         self.db_path = db_path
         self.db_schema = DatabaseSchema(db_path)
@@ -43,6 +47,12 @@ class DataIngestion:
         # Initialize AI components
         self.openai_client = self._initialize_openai()
         self.embedding_model = self._initialize_embedding_model()
+        self.vector_search = FAISSVectorSearch(db_path)  # Proper FAISS integration
+        
+        # Initialize enhanced loader for bulletproof accuracy
+        self.use_enhanced_loader = use_enhanced_loader
+        self.enhanced_loader = EnhancedFileLoader(use_polars=use_polars) if use_enhanced_loader else None
+        self.file_metadata = {}  # Store enhanced loading metadata
         
         # Framework mapping configuration
         self.framework_mappings = {
@@ -185,20 +195,60 @@ class DataIngestion:
             return None
     
     def _load_file(self, file_path: str) -> Optional[pd.DataFrame]:
-        """Load file into pandas DataFrame."""
+        """Load file with enhanced accuracy and bulletproof data extraction."""
         try:
             file_ext = Path(file_path).suffix.lower()
             
-            if file_ext == '.xlsx':
-                # Try to read XLSX file
-                df = pd.read_excel(file_path)
-                logger.info(f"Loaded XLSX file with {len(df)} rows, {len(df.columns)} columns")
+            if file_ext in ['.xlsx', '.csv']:
                 
-            elif file_ext == '.csv':
-                # Try to read CSV file
-                df = pd.read_csv(file_path)
-                logger.info(f"Loaded CSV file with {len(df)} rows, {len(df.columns)} columns")
+                if self.use_enhanced_loader and self.enhanced_loader:
+                    # Use enhanced loader for bulletproof accuracy
+                    logger.info(f"Loading {file_path} with enhanced accuracy (openpyxl pre-scanning + type inference)")
+                    
+                    try:
+                        df, metadata = self.enhanced_loader.load_file(file_path)
+                        
+                        # Store metadata for later use in extraction
+                        self.file_metadata[file_path] = metadata
+                        
+                        # Convert Polars to pandas if needed for compatibility with existing code
+                        if hasattr(df, 'to_pandas'):  # It's a Polars DataFrame
+                            df_pandas = df.to_pandas()
+                            logger.info(f"Converted Polars DataFrame to pandas for compatibility")
+                        else:
+                            df_pandas = df
+                        
+                        # Log enhanced loading results
+                        logger.info(f"Enhanced loading completed:")
+                        logger.info(f"  - Rows: {metadata['total_rows']}, Columns: {metadata['total_columns']}")
+                        logger.info(f"  - Load method: {metadata['load_method']}")
+                        logger.info(f"  - Sheet: {metadata.get('sheet_name', 'N/A')}")
+                        
+                        # Log type inference results
+                        type_issues = []
+                        for col, inference in metadata['type_inference'].items():
+                            if inference['confidence'] < 0.8:
+                                type_issues.append(f"{col} ({inference['confidence']:.2f})")
+                        
+                        if type_issues:
+                            logger.warning(f"Low confidence type inference for columns: {', '.join(type_issues)}")
+                        else:
+                            logger.info("All columns have high confidence type inference (>0.8)")
+                        
+                        return df_pandas
+                        
+                    except Exception as e:
+                        logger.warning(f"Enhanced loading failed: {e}. Falling back to standard loading.")
+                        # Fall through to standard loading
                 
+                # Standard loading (fallback)
+                if file_ext == '.xlsx':
+                    df = pd.read_excel(file_path)
+                    logger.info(f"Loaded XLSX file (standard method) with {len(df)} rows, {len(df.columns)} columns")
+                elif file_ext == '.csv':
+                    df = pd.read_csv(file_path)
+                    logger.info(f"Loaded CSV file (standard method) with {len(df)} rows, {len(df.columns)} columns")
+                    
             elif file_ext == '.pdf':
                 # PDF handling would go here - for now, placeholder
                 logger.warning("PDF ingestion not yet implemented")
@@ -253,8 +303,25 @@ class DataIngestion:
             return []
     
     def _extract_with_gpt4(self, data_sample: str, column_info: str, source_id: int) -> List[Dict[str, Any]]:
-        """Extract metrics using GPT-4."""
+        """Extract metrics using GPT-4 with enhanced cell reference tracking."""
         try:
+            # Check if we have enhanced metadata available
+            enhanced_info = ""
+            if hasattr(self, 'current_file_path') and self.current_file_path in self.file_metadata:
+                metadata = self.file_metadata[self.current_file_path]
+                enhanced_info = f"""
+            
+            ENHANCED LOADING METADATA (BULLETPROOF ACCURACY):
+            - File loaded with openpyxl pre-scanning and type inference
+            - Sheet: {metadata.get('sheet_name', 'Unknown')}
+            - Load method: {metadata.get('load_method', 'Unknown')}
+            - Type inference confidence levels available for precise citation
+            
+            TYPE INFERENCE RESULTS:
+            {json.dumps({col: {'type': info['inferred_type'], 'confidence': info['confidence']} 
+                        for col, info in metadata.get('type_inference', {}).items()}, indent=2)}
+            """
+            
             prompt = f"""
             You are analyzing social value data from a spreadsheet. Extract measurable impact metrics with PRECISE CITATIONS.
 
@@ -262,6 +329,7 @@ class DataIngestion:
             {data_sample}
 
             {column_info}
+            {enhanced_info}
 
             CRITICAL: For each metric, you MUST provide exact source location details for verification.
 
@@ -323,7 +391,7 @@ class DataIngestion:
                 model="gpt-4",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=2000
+                max_tokens=4000
             )
 
             result_text = response.choices[0].message.content.strip()
@@ -491,19 +559,65 @@ class DataIngestion:
                 f"Context: {metric.get('context_description', '')}"
             )
             
-            # Generate embedding
-            embedding = self.embedding_model.encode(text_chunk)
+            # Generate embedding vector
+            embedding_vector = self.embedding_model.encode(text_chunk)
             embedding_id = f"metric_{metric_id}"
             
-            # Store embedding metadata (actual vector would go to FAISS)
+            # Store embedding metadata in SQLite
             cursor.execute("""
                 INSERT INTO embeddings
                 (metric_id, embedding_vector_id, text_chunk, chunk_type)
                 VALUES (?, ?, ?, ?)
             """, (metric_id, embedding_id, text_chunk, 'metric'))
             
-            # TODO: Store actual embedding vector in FAISS index
-            logger.debug(f"Created embedding for metric {metric_id}")
+            # Enhance with enhanced loader metadata if available
+            enhanced_metadata = {}
+            if hasattr(self, 'current_file_path') and self.current_file_path in self.file_metadata:
+                file_meta = self.file_metadata[self.current_file_path]
+                enhanced_metadata = {
+                    'enhanced_loading': True,
+                    'load_method': file_meta.get('load_method'),
+                    'sheet_name': file_meta.get('sheet_name'),
+                    'type_inference_available': True,
+                    'cell_references_available': 'cell_references' in file_meta
+                }
+                
+                # Add column type inference info if available
+                column_name = metric.get('source_column_name')
+                if column_name and column_name in file_meta.get('type_inference', {}):
+                    type_info = file_meta['type_inference'][column_name]
+                    enhanced_metadata['column_type_info'] = {
+                        'inferred_type': type_info['inferred_type'],
+                        'confidence': type_info['confidence'],
+                        'type_issues': type_info.get('issues', [])
+                    }
+            
+            # Store actual embedding vector in FAISS index
+            embedding_data = {
+                'vector': embedding_vector,
+                'text_chunk': text_chunk,
+                'metric_id': metric_id,
+                'chunk_type': 'metric',
+                'metric_name': metric['metric_name'],
+                'metric_category': metric['metric_category'],
+                'filename': os.path.basename(self.current_file_path) if hasattr(self, 'current_file_path') else 'unknown',
+                'enhanced_metadata': enhanced_metadata,
+                'source_info': {
+                    'metric_value': metric['metric_value'],
+                    'metric_unit': metric['metric_unit'],
+                    'context_description': metric.get('context_description', ''),
+                    'source_sheet_name': metric.get('source_sheet_name'),
+                    'source_column_name': metric.get('source_column_name'),
+                    'source_cell_reference': metric.get('source_cell_reference'),
+                    'source_formula': metric.get('source_formula'),
+                    'verification_status': 'pending'
+                }
+            }
+            
+            # Add to FAISS index
+            self.vector_search.add_embeddings([embedding_data])
+            
+            logger.debug(f"Created and stored embedding for metric {metric_id} in FAISS")
             
         except Exception as e:
             logger.error(f"Error creating embedding: {e}")
@@ -524,9 +638,17 @@ class DataIngestion:
             logger.error(f"Error updating source status: {e}")
 
 
-def ingest_file(file_path: str, db_path: str = "db/impactos.db") -> bool:
-    """Convenience function for ingesting a single file."""
-    ingestion = DataIngestion(db_path)
+def ingest_file(file_path: str, db_path: str = "db/impactos.db", use_enhanced_loader: bool = True, use_polars: bool = True) -> bool:
+    """
+    Convenience function for ingesting a single file with enhanced accuracy.
+    
+    Args:
+        file_path: Path to file to ingest
+        db_path: Path to database
+        use_enhanced_loader: Whether to use bulletproof enhanced loading (default: True)
+        use_polars: Whether to use Polars for type safety (default: True)
+    """
+    ingestion = DataIngestion(db_path, use_enhanced_loader=use_enhanced_loader, use_polars=use_polars)
     return ingestion.ingest_file(file_path)
 
 
