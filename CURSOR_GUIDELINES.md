@@ -1,35 +1,75 @@
-# Cursor AI Guidelines for ImpactOS AI Layer MVP
+# Cursor AI Guidelines for ImpactOS AI Agent - Iterative Development
 
-These guidelines help Cursor's AI generate code, commits, and suggestions consistently. Follow them strictly when assisting.
+These guidelines help Cursor's AI generate code, commits, and suggestions consistently for the evolving ImpactOS AI Agent. Follow them strictly when assisting with iterative development and expansion.
 
 ## Commit Conventions
-- Use Conventional Commits inspired by Airbnb's JavaScript style guide[](https://github.com/airbnb/javascript#commit-messages), adapted for this Python project.
-- Prefix messages with types: `feat:` (new feature), `fix:` (bug fix), `docs:` (documentation), `chore:` (maintenance), `refactor:` (code improvement without changing behavior), `test:` (adding tests).
-- Subject line: Imperative mood, concise (≤50 chars), e.g., "feat: Add ingestion CLI command".
-- Body: Optional, detailed explanation if needed. Reference issues if applicable.
+- Use Conventional Commits inspired by Airbnb's JavaScript style guide, adapted for this mature Python project.
+- Prefix messages with types: `feat:` (new feature), `fix:` (bug fix), `docs:` (documentation), `chore:` (maintenance), `refactor:` (code improvement without changing behavior), `test:` (adding tests), `perf:` (performance improvement), `breaking:` (breaking changes).
+- Subject line: Imperative mood, concise (≤50 chars), e.g., "feat: Add framework mapping validation".
+- Body: Include rationale for changes, impact on existing functionality, and any migration notes.
 - Examples:
-  - `feat: Implement PDF parsing in ingest.py`
-  - `fix: Handle invalid values in data extraction`
-- Commit small, logical changes frequently.
+  - `feat: Add real-time query performance monitoring`
+  - `refactor: Optimize vector search for large datasets`
+  - `breaking: Update framework mapping API for extensibility`
+- Commit incremental, logical changes that maintain system stability.
 
 ## Coding Standards (Python-Specific)
 - Follow PEP 8: Indentation (4 spaces), line length ≤79 chars, imports at top (standard, third-party, local).
-- Naming: Variables/functions: snake_case (e.g., `ingest_file`). Classes: CamelCase (e.g., `ImpactMetric`). Constants: UPPER_SNAKE_CASE.
-- Docstrings: Use Google style for functions/classes.
-- Error Handling: Use try/except for file I/O, API calls; log errors meaningfully.
-- Dependencies: Only use installed libs (e.g., langchain, pandas); no new installs.
-- Testing: Add unit tests in `tests/`; aim for 90% coverage on key functions.
+- Naming: Variables/functions: snake_case (e.g., `process_impact_metrics`). Classes: CamelCase (e.g., `FrameworkMapper`). Constants: UPPER_SNAKE_CASE.
+- Docstrings: Use Google style for functions/classes with parameter types and return values.
+- Error Handling: Use try/except for file I/O, API calls; log errors meaningfully with context.
+- Dependencies: Use existing dependencies when possible; justify new dependencies with clear benefits.
+- **Backward Compatibility**: Ensure existing APIs and interfaces continue working unless marked deprecated.
+- **Testing**: Add comprehensive tests for all new functionality using existing testing infrastructure.
 
-## Project Structure and Workflow
-- Files: Keep code in `src/` (e.g., `ingest.py`), samples in `data/`, DB in `db/`.
-- Branching: Use `feature/<task-name>` for new work, `fix/<issue>` for bugs.
-- Prompts to Cursor: Be specific, e.g., "Refactor this function to handle low-confidence data, following PEP 8."
-- AI Assistance: Generate code snippets with explanations; suggest improvements but don't overwrite without confirmation.
+## Project Architecture and Workflow
+- **Extension Strategy**: Prefer extending existing modules (e.g., adding new framework support to `frameworks.py`) over creating parallel implementations.
+- **Interface Stability**: Maintain stable public interfaces for core components (QuerySystem, IngestionPipeline, etc.).
+- **Configuration Management**: Use configuration files in `config/` for behavior changes rather than hardcoded values.
+- **Testing Integration**: Leverage existing test infrastructure in `src/testing/` for all new features.
+- **Performance Considerations**: Use performance tracking to ensure new features don't degrade existing functionality.
+- **Modularity**: Design new features as independent modules that integrate cleanly with existing architecture.
 
-## Other Best Practices
-- Security: Avoid hardcoding API keys; use env vars (e.g., `os.getenv('OPENAI_API_KEY')`).
-- Performance: Optimize for small datasets in Phase One; profile if needed.
-- Documentation: Update `README.md` with new features/usage.
-- Reviews: Suggest commits that are review-ready (small, focused).
+## Development Workflow Standards
+- **Pre-Development Assessment**: Always examine existing code patterns and interfaces before implementing new features.
+- **Incremental Development**: Break large features into smaller, testable increments that can be safely deployed.
+- **Feature Flags**: Use configuration-based feature flags for gradual rollout of new capabilities.
+- **Documentation Updates**: Update README, docstrings, and inline documentation with any changes.
+- **Testing Requirements**: Every change must include appropriate test coverage and pass existing tests.
+- **Performance Validation**: Use existing performance tracking to validate that changes meet quality standards.
 
-Follow these to maintain consistency. If unclear, ask for clarification in prompts.
+## Branching and Integration
+- **Feature Branches**: Use descriptive branch names: `feature/enhanced-vector-search`, `fix/framework-mapping-edge-case`.
+- **Integration Strategy**: Ensure feature branches integrate cleanly with existing functionality.
+- **Code Review Readiness**: Commits should be self-contained and include comprehensive test coverage.
+- **Breaking Changes**: Document breaking changes clearly and provide migration guidance.
+
+## AI Assistance Guidelines
+- **Context Awareness**: Always examine existing codebase patterns before suggesting implementations.
+- **Consistency**: Follow established architectural patterns and coding styles in the project.
+- **Extensibility**: Design solutions that can be extended for future requirements without major refactoring.
+- **Quality First**: Prioritize maintainable, well-tested code over quick implementations.
+- **Documentation**: Generate code with comprehensive docstrings and inline comments.
+- **Performance**: Consider performance implications and use existing benchmarking tools for validation.
+
+## Security and Production Considerations
+- **API Security**: Design internal APIs with future external exposure in mind.
+- **Data Protection**: Handle sensitive data according to existing patterns in the codebase.
+- **Environment Configuration**: Use environment variables for sensitive configuration (API keys, database URLs).
+- **Audit Trails**: Consider logging and audit requirements for enterprise use cases.
+- **Error Handling**: Implement comprehensive error handling with appropriate logging levels.
+
+## Long-term Vision Alignment
+- **Scalability**: Design features to work from single-user CLI to multi-tenant web application.
+- **Web UI Readiness**: Structure backend logic to be easily consumable by future web interfaces.
+- **API Potential**: Design internal interfaces that could be exposed as REST APIs.
+- **Enterprise Features**: Consider requirements for role-based access, audit logging, and advanced security.
+- **Open Source Sustainability**: Maintain clear separation between core open-source features and potential commercial extensions.
+
+## Quality Assurance
+- **Test Coverage**: Maintain high test coverage using existing testing infrastructure.
+- **Performance Benchmarks**: Use performance tracking to ensure system improvements over time.
+- **Code Quality**: Regular refactoring to maintain code quality while preserving functionality.
+- **Documentation Currency**: Keep all documentation aligned with current system capabilities.
+
+Follow these guidelines to ensure consistent, high-quality development that supports the project's evolution toward the full ImpactOS vision while maintaining stability and reliability of existing functionality.
