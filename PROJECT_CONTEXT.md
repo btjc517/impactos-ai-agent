@@ -1,6 +1,6 @@
-# Project Context for Cursor AI: ImpactOS AI Layer MVP Phase One
+# Project Context for Cursor AI: ImpactOS AI Agent
 
-This file provides essential context for Cursor's AI to generate code, suggestions, and improvements for the ImpactOS AI Layer MVP. Read and follow this fully before responding. If anything is unclear, missing, or requires prior steps, ask for clarification or suggest preemptive actions (e.g., "This task requires completing the ingestion pipeline first—shall I guide you through that?").
+This file provides essential context for Cursor's AI to generate code, suggestions, and improvements for the ImpactOS AI Agent. Read and follow this fully before responding. If anything is unclear, missing, or requires prior steps, ask for clarification or suggest preemptive actions (e.g., "This task requires completing the ingestion pipeline first—shall I guide you through that?").
 
 ## Project Overview
 - **Goal**: Build a standalone Python CLI tool (Phase One of MVP) to ingest local CSV/PDF files containing social value data (e.g., volunteering hours, carbon emissions, donations), extract/normalize metrics, map to frameworks (e.g., UK SV Model/MAC, UN SDGs, TOMs, B Corp), store in SQLite (relational) and FAISS (vector embeddings), and enable terminal Q&A with citations using LangChain and GPT-4.

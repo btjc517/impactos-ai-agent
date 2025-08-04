@@ -1,4 +1,4 @@
-# ImpactOS AI Layer Phase One MVP
+# ImpactOS AI Agent
 
 A CLI tool to ingest and query social value data
 
@@ -43,7 +43,7 @@ This project provides a Python-based command-line interface for ingesting CSV an
 ## Project Structure
 
 ```
-impactos-ai-phase1/
+impactos-ai-agent/
 ├── src/                    # Python source files
 │   ├── ingest.py          # Data ingestion logic
 │   ├── query.py           # Query processing
