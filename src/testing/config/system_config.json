@@ -1,0 +1,51 @@
+{
+  "vector_search": {
+    "embedding_dimension": 384,
+    "default_k": 100,
+    "min_similarity_threshold": 0.2,
+    "adaptive_similarity": true,
+    "batch_size": 100,
+    "index_type": "IndexFlatIP",
+    "similarity_thresholds": {
+      "aggregation": 0.25,
+      "descriptive": 0.3,
+      "analytical": 0.35,
+      "default": 0.3
+    }
+  },
+  "query_processing": {
+    "max_results_for_gpt": 25,
+    "max_initial_retrieval": 500,
+    "aggregation_result_limit": 200,
+    "descriptive_result_limit": 100,
+    "analytical_result_limit": 75,
+    "gpt4_max_tokens": 2000,
+    "gpt4_temperature": 0.1,
+    "gpt4_model": "gpt-4",
+    "enable_intelligent_filtering": true,
+    "duplicate_detection": true,
+    "enable_result_caching": true,
+    "cache_ttl_seconds": 3600
+  },
+  "extraction": {
+    "gpt4_max_tokens_extraction": 4000,
+    "gpt4_max_tokens_analysis": 3000,
+    "gpt4_max_tokens_verification": 2500,
+    "confidence_threshold": 0.7,
+    "verification_tolerance": 0.02,
+    "max_rows_per_batch": 1000,
+    "max_file_size_mb": 50,
+    "max_retries": 3,
+    "retry_delay_seconds": 1.0
+  },
+  "scalability": {
+    "max_memory_usage_mb": 2048,
+    "result_chunk_size": 100,
+    "db_connection_pool_size": 5,
+    "query_timeout_seconds": 30,
+    "faiss_nprobe": 1,
+    "faiss_metric_type": "METRIC_INNER_PRODUCT",
+    "embedding_batch_size": 50,
+    "metric_processing_batch_size": 100
+  }
+}
