@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import uvicorn
+from contextlib import asynccontextmanager
 
 # Add src to path for imports
 src_path = os.path.dirname(__file__)
@@ -97,16 +98,18 @@ app = FastAPI(
     description="REST API for ImpactOS AI social value data analysis system",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan
 )
 
 # Add CORS middleware for web portal integration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure this for production with specific domains
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=["*"],  # Allow all origins for now - configure for production
+    allow_credentials=False,  # Set to False when using allow_origins=["*"]
+    allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # Initialize ImpactOS CLI instance
@@ -119,14 +122,22 @@ def get_cli_instance():
         impactos_cli = ImpactOSCLI()
     return impactos_cli
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize services on startup."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan context manager."""
+    # Startup
     logger.info("Starting ImpactOS AI Web API service...")
     cli = get_cli_instance()
     logger.info("ImpactOS AI Web API service ready")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down ImpactOS AI Web API service...")
+    # Cleanup if needed
 
 @app.get("/", response_model=Dict[str, str])
+@app.head("/")
 async def root():
     """API root endpoint."""
     return {
@@ -157,6 +168,15 @@ async def health_check():
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
+
+@app.get("/test")
+async def test_endpoint():
+    """Simple test endpoint for debugging."""
+    return {
+        "status": "API is working",
+        "timestamp": datetime.now().isoformat(),
+        "environment": "production" if os.getenv("PORT") else "development"
+    }
 
 @app.post("/query", response_model=QueryResponse)
 async def query_data_endpoint(request: QueryRequest):
