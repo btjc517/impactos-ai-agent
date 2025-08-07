@@ -18,7 +18,7 @@ services:
         sync: false  # Set this manually in Render dashboard
     autoDeploy: true
     repo: https://github.com/btjc517/impactos-ai-agent
-    branch: develop
+    branch: main
     rootDir: .
     
 databases:
