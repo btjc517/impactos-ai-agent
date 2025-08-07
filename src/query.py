@@ -53,6 +53,8 @@ class QuerySystem:
         # Load dynamic configuration (replaces hardcoded values)
         self.config = get_config()
         self.config_manager = get_config_manager()
+        self._intent_cache: Dict[str, Dict[str, Any]] = {}
+        self._answer_cache: Dict[str, str] = {}
     
     def _initialize_openai(self) -> Optional[OpenAI]:
         """Initialize OpenAI client with API key."""
@@ -69,6 +71,103 @@ class QuerySystem:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             return None
     
+    def _build_answer_cache_key(self, question: str, results: List[Dict[str, Any]]) -> str:
+        """Create a stable cache key from question and top source filenames."""
+        try:
+            filenames = []
+            for r in results[:10]:
+                data = r.get('data', {})
+                fn = data.get('filename') or data.get('filenames') or ''
+                if isinstance(fn, str):
+                    filenames.append(fn)
+            key = question.strip().lower() + '||' + '|'.join(sorted(set(filenames)))
+            return key
+        except Exception:
+            return question.strip().lower()
+
+    def _try_sql_direct_answer(self, question: str, analysis: Dict[str, Any], results: List[Dict[str, Any]]) -> Optional[str]:
+        """Attempt to generate a deterministic aggregation answer without GPT.
+        Returns answer string if confident, else None.
+        """
+        try:
+            if os.getenv('IMPACTOS_DISABLE_SQL_DIRECT', '').lower() in ('1','true','yes'):
+                return None
+            ql = question.lower()
+            sum_like = any(k in ql for k in ['total', 'sum', 'overall', 'aggregate'])
+            if analysis.get('query_type') != 'aggregation' and 'sum' not in analysis.get('aggregations', []) and not sum_like:
+                return None
+            aggregated = [r for r in results if r['type'] == 'sql_aggregated_metric']
+            individual = [r for r in results if r['type'] in ['sql_individual_metric', 'sql_metric']]
+            # Prefer aggregated summaries when available
+            if aggregated:
+                # Ensure unit consistency
+                units = {a['data'].get('metric_unit') for a in aggregated if a.get('data')}
+                if len(units) != 1:
+                    return None
+                unit = next(iter(units)) or ''
+                # If multiple metric_names present, bail out (ambiguous)
+                metric_names = {a['data'].get('metric_name') for a in aggregated}
+                if len(metric_names) != 1:
+                    return None
+                metric_name = next(iter(metric_names)) or 'metric'
+                # Sum totals (aggregated rows are already SUM per group; if multiple groups exist, sum them)
+                total = 0.0
+                for a in aggregated:
+                    val = a['data'].get('total_value')
+                    try:
+                        total += float(val)
+                    except (TypeError, ValueError):
+                        return None
+                # Sources
+                source_set = []
+                for a in aggregated:
+                    fns = a['data'].get('filenames') or ''
+                    for fn in str(fns).split(','):
+                        fn = fn.strip()
+                        if fn and fn not in source_set:
+                            source_set.append(fn)
+                sources_fmt = ''.join([f"[{i+1}] {fn}\n" for i, fn in enumerate(source_set[:5])])
+                answer = (
+                    f"Total {metric_name.replace('_', ' ')} = {total:.2f} {unit}. "
+                    + ' '.join([f"[{i+1}]" for i in range(min(5, len(source_set)))])
+                )
+                if source_set:
+                    answer += f"\nSources:\n{sources_fmt}".rstrip()
+                return answer
+            # Fallback: compute sum from individual results if consistent
+            if individual:
+                units = {i['data'].get('metric_unit') for i in individual if i.get('data')}
+                if len(units) != 1:
+                    return None
+                unit = next(iter(units)) or ''
+                metric_names = {i['data'].get('metric_name') for i in individual}
+                if len(metric_names) != 1:
+                    return None
+                metric_name = next(iter(metric_names)) or 'metric'
+                total = 0.0
+                for i in individual:
+                    try:
+                        total += float(i['data'].get('metric_value'))
+                    except (TypeError, ValueError):
+                        return None
+                filenames = []
+                for i in individual[:10]:
+                    fn = i['data'].get('filename')
+                    if fn and fn not in filenames:
+                        filenames.append(fn)
+                sources_fmt = ''.join([f"[{i+1}] {fn}\n" for i, fn in enumerate(filenames[:5])])
+                answer = (
+                    f"Total {metric_name.replace('_', ' ')} = {total:.2f} {unit}. "
+                    + ' '.join([f"[{i+1}]" for i in range(min(5, len(filenames)))])
+                )
+                if filenames:
+                    answer += f"\nSources:\n{sources_fmt}".rstrip()
+                return answer
+            return None
+        except Exception as e:
+            logger.warning(f"SQL direct answer attempt failed: {e}")
+            return None
+
     def query(self, question: str) -> str:
         """
         Process natural language query and return cited answer.
@@ -82,6 +181,12 @@ class QuerySystem:
         try:
             logger.info(f"Processing query: {question}")
             
+            # Answer cache check (quick return on repeats)
+            # Build a provisional key using question only; later include sources
+            provisional_key = question.strip().lower()
+            if provisional_key in self._answer_cache:
+                return self._answer_cache[provisional_key]
+            
             # 1. Analyze query intent and extract key terms
             query_analysis = self._analyze_query(question)
             
@@ -89,6 +194,15 @@ class QuerySystem:
             results = self._enhanced_hybrid_search(question, query_analysis)
             
             logger.info(f"Retrieved {len(results)} total relevant results")
+            
+            # 2.5 SQL-first deterministic answer for aggregations
+            direct_answer = self._try_sql_direct_answer(question, query_analysis, results)
+            if direct_answer:
+                cache_key = self._build_answer_cache_key(question, results)
+                self._answer_cache[cache_key] = direct_answer
+                self._answer_cache[provisional_key] = direct_answer
+                logger.info("Returning SQL-first deterministic answer (no GPT)")
+                return direct_answer
             
             # 3. Intelligent filtering and summarization for GPT-4
             filtered_results = self._intelligent_filter_for_gpt(results, query_analysis)
@@ -101,12 +215,52 @@ class QuerySystem:
             else:
                 answer = self._generate_fallback_answer(question, results)
             
+            # Store in cache with stronger key after retrieval
+            cache_key = self._build_answer_cache_key(question, results)
+            self._answer_cache[cache_key] = answer
+            self._answer_cache[provisional_key] = answer
             logger.info("Query processing completed")
             return answer
             
         except Exception as e:
             logger.error(f"Error processing query: {e}")
             return f"Error processing query: {e}"
+    
+    def _classify_intent_with_llm(self, question: str) -> Optional[Dict[str, Any]]:
+        """Use a lightweight LLM to classify categories and aggregations.
+        Returns a dict with keys: categories (list), aggregations (list), query_type (str).
+        """
+        cfg = self.config.analysis
+        if not (self.openai_client and getattr(cfg, 'use_llm_for_intent', False)):
+            return None
+        if question in self._intent_cache:
+            return self._intent_cache[question]
+        try:
+            categories = list(cfg.category_descriptions.keys()) if cfg.category_descriptions else []
+            aggregations = list(cfg.aggregation_descriptions.keys()) if cfg.aggregation_descriptions else []
+            prompt = (
+                "Classify the question into zero or more categories and aggregations.\n"
+                f"Categories: {', '.join(categories)}\n"
+                f"Aggregations: {', '.join(aggregations)}\n"
+                "Also classify overall query_type as one of: aggregation, descriptive, analytical.\n"
+                "Return strict JSON with keys: categories (list of strings), aggregations (list of strings), query_type (string).\n"
+                f"Question: {question}"
+            )
+            resp = self.openai_client.chat.completions.create(
+                model=cfg.llm_intent_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=cfg.llm_intent_temperature,
+                max_tokens=cfg.llm_intent_max_tokens
+            )
+            import json as _json
+            content = resp.choices[0].message.content.strip()
+            data = _json.loads(content)
+            if isinstance(data, dict):
+                self._intent_cache[question] = data
+                return data
+        except Exception as e:
+            logger.warning(f"LLM intent classification failed: {e}")
+        return None
     
     def _analyze_query(self, question: str) -> Dict[str, Any]:
         """Enhanced query analysis to extract intent and key terms."""
@@ -121,10 +275,18 @@ class QuerySystem:
             'query_type': 'descriptive'  # New field for query type classification
         }
         
+        # Optionally classify with a lightweight LLM first
+        llm_intent = self._classify_intent_with_llm(question)
+        if llm_intent:
+            analysis['categories'] = llm_intent.get('categories', [])
+            analysis['aggregations'] = llm_intent.get('aggregations', [])
+            if llm_intent.get('query_type') in ('aggregation','descriptive','analytical'):
+                analysis['query_type'] = llm_intent['query_type']
+        
         # Prefer embedding-based intent detection if available
         cfg = getattr(self.config, 'analysis', None)
         used_embedding_intent = False
-        if cfg and getattr(cfg, 'use_embedding_for_intent', False) and self.vector_search and self.vector_search.embedding_model:
+        if cfg and getattr(self.config.analysis, 'use_embedding_for_intent', False) and self.vector_search and self.vector_search.embedding_model:
             try:
                 query_vec = self.vector_search.embedding_model.encode([question])[0]
                 # Prepare prototypes
@@ -145,30 +307,30 @@ class QuerySystem:
                 for label, proto_vec in zip(category_labels, cat_vecs):
                     sim = cos_sim(query_vec, proto_vec)
                     if sim >= cfg.category_min_similarity:
-                        analysis['categories'].append(label)
+                        if label not in analysis['categories']:
+                            analysis['categories'].append(label)
                 
                 # Aggregations
                 for label, proto_vec in zip(agg_labels, agg_vecs):
                     sim = cos_sim(query_vec, proto_vec)
                     if sim >= cfg.aggregation_min_similarity:
-                        analysis['aggregations'].append(label)
-                used_embedding_intent = True
+                        if label not in analysis['aggregations']:
+                            analysis['aggregations'].append(label)
+                    used_embedding_intent = True
             except Exception as e:
-                logger.warning(f"Embedding-based intent detection failed, falling back to keywords: {e}")
+                logger.warning(f"Embedding-based intent detection failed, using keywords as complement: {e}")
                 used_embedding_intent = False
         
-        # Fallback or complement with keyword matching
-        if not used_embedding_intent:
-            # Detect categories with expanded keywords (from config)
-            category_keywords = getattr(self.config.analysis, 'category_keywords', {})
-            for category, keywords in category_keywords.items():
-                if any(keyword in question_lower for keyword in keywords):
+        # Always complement with keyword matching (union), to improve recall
+        category_keywords = getattr(self.config.analysis, 'category_keywords', {})
+        for category, keywords in category_keywords.items():
+            if any(keyword in question_lower for keyword in keywords):
+                if category not in analysis['categories']:
                     analysis['categories'].append(category)
-            
-            # Detect aggregations (from config)
-            aggregation_patterns = getattr(self.config.analysis, 'aggregation_patterns', {})
-            for agg_type, patterns in aggregation_patterns.items():
-                if any(pattern in question_lower for pattern in patterns):
+        aggregation_patterns = getattr(self.config.analysis, 'aggregation_patterns', {})
+        for agg_type, patterns in aggregation_patterns.items():
+            if any(pattern in question_lower for pattern in patterns):
+                if agg_type not in analysis['aggregations']:
                     analysis['aggregations'].append(agg_type)
         
         # Classify query type for intelligent processing
@@ -554,6 +716,9 @@ class QuerySystem:
             
             context = '\n'.join(context_parts)
             
+            # Detect if a graph/visualization was requested to guide tone
+            ql = question.lower()
+            graph_requested = any(k in ql for k in ["graph", "chart", "plot", "visual", "visualize", "visualisation", "visualization"])            
             prompt = f"""
             You are analyzing comprehensive social value data to answer questions with accurate citations.
             
@@ -572,6 +737,8 @@ class QuerySystem:
             7. If multiple data points contribute to an answer, sum them appropriately
             8. If data is insufficient, state that clearly
             9. Be comprehensive but concise
+            10. Do NOT say that a graph cannot be provided; assume the UI will render any requested charts.
+            11. If a chart is requested, include a short 1-line caption and recommended chart type (e.g., Bar or Line) and axes labels.
             
             Format your answer as:
             [Answer with specific data and calculations, citing all relevant sources]
@@ -588,10 +755,37 @@ class QuerySystem:
             )
             
             answer = response.choices[0].message.content.strip()
+            # Sanitize any residual "cannot provide graph" disclaimers if graph requested
+            if graph_requested:
+                answer = self._sanitize_graph_language(answer)
             return answer
         except Exception as e:
             logger.error(f"Error generating GPT answer: {e}")
             return self._generate_fallback_answer(question, results)
+
+    def _sanitize_graph_language(self, text: str) -> str:
+        """Remove unhelpful disclaimers about inability to display graphs when UI will render charts."""
+        try:
+            lowered = text.lower()
+            bad_phrases = [
+                "cannot be provided in this text-based format",
+                "cannot be provided in a text-based format",
+                "cannot provide a graph",
+                "unable to provide a graph",
+                "cannot display a chart",
+                "cannot display the graph",
+                "i cannot provide",
+                "this text-based format"
+            ]
+            cleaned_lines = []
+            for line in text.split('\n'):
+                lline = line.lower()
+                if any(p in lline for p in bad_phrases):
+                    continue
+                cleaned_lines.append(line)
+            return '\n'.join(cleaned_lines)
+        except Exception:
+            return text
     
     def _generate_fallback_answer(self, question: str, results: List[Dict[str, Any]]) -> str:
         """Generate comprehensive fallback answer when GPT-4 is not available."""
@@ -685,6 +879,257 @@ class QuerySystem:
         answer_parts.append(f"\nTotal Results Analyzed: {len(results)}")
         
         return '\n'.join(answer_parts)
+
+    # =====================
+    # Visualization support
+    # =====================
+    def _detect_chart_intent(self, question: str, analysis: Dict[str, Any]) -> Tuple[bool, str]:
+        """Detect if the user likely wants a chart and suggest a type.
+        Returns (want_chart, chart_type) where chart_type is 'bar' or 'line'.
+        """
+        q = question.lower()
+        chart_keywords = ["chart", "graph", "plot", "visual", "visualize", "visualisation", "visualization", "bar", "line", "trend", "over time", "timeseries", "time series", "distribution", "breakdown"]
+        want_chart = any(k in q for k in chart_keywords)
+        # Prefer a chart for aggregation results even if not explicitly asked
+        if analysis.get('query_type') == 'aggregation':
+            want_chart = True or want_chart
+        # Choose type
+        time_like = any(k in q for k in ["over time", "trend", "timeseries", "time series", "monthly", "quarterly", "annually", "per month", "per quarter", "per year"]) or any(t in analysis.get('time_references', []) for t in ["monthly", "quarterly", "annually"])
+        chart_type = 'line' if time_like else 'bar'
+        return want_chart, chart_type
+
+    def _is_time_series_request(self, question: str, analysis: Dict[str, Any]) -> bool:
+        q = question.lower()
+        return any(k in q for k in ["over time", "trend", "timeseries", "time series", "monthly", "quarterly", "annually", "per month", "per quarter", "per year", "by month", "by year", "timeline"]) or analysis.get('query_type') == 'aggregation' and any(t in (analysis.get('time_references') or []) for t in ["monthly", "quarterly", "annually"])
+
+    def _build_time_series_chart(self, analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Build a time-series chart payload by aggregating metric values by month.
+        Uses im.timestamp when available, otherwise falls back to source processed_timestamp.
+        Returns payload with type 'line', x_key 'date', multi-series data by category or metric_name.
+        """
+        try:
+            import sqlite3
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                where_conditions = ["im.metric_value IS NOT NULL"]
+                params: List[Any] = []
+                categories = analysis.get('categories') or []
+                if categories:
+                    placeholders = ','.join(['?' for _ in categories])
+                    where_conditions.append(f"im.metric_category IN ({placeholders})")
+                    params.extend(categories)
+                where_clause = ' AND '.join(where_conditions)
+                # Aggregate by month using im.timestamp or fallback to source processed timestamp
+                query = f"""
+                    SELECT 
+                        COALESCE(strftime('%Y-%m', im.timestamp), strftime('%Y-%m', s.processed_timestamp)) AS period,
+                        im.metric_category,
+                        im.metric_name,
+                        SUM(im.metric_value) AS total_value
+                    FROM impact_metrics im
+                    JOIN sources s ON im.source_id = s.id
+                    WHERE {where_clause}
+                    GROUP BY period, im.metric_category, im.metric_name
+                    HAVING period IS NOT NULL
+                    ORDER BY period ASC
+                """
+                cursor.execute(query, params)
+                rows = [dict(r) for r in cursor.fetchall()]
+                if not rows:
+                    return None
+                # Decide series dimension: prefer categories if present, else top metric_names
+                series_by = 'metric_category' if categories else 'metric_name'
+                # Collect periods
+                periods = sorted({r['period'] for r in rows})
+                # Choose up to 4 series keys by total sum
+                totals: Dict[str, float] = {}
+                for r in rows:
+                    key = r[series_by] or 'metric'
+                    totals[key] = totals.get(key, 0.0) + float(r['total_value'] or 0.0)
+                top_keys = [k for k, _ in sorted(totals.items(), key=lambda kv: kv[1], reverse=True)[:4]]
+                # Build data rows with zero-fill
+                data_rows: List[Dict[str, Any]] = []
+                for p in periods:
+                    row: Dict[str, Any] = {'date': p}
+                    for key in top_keys:
+                        row[key] = 0.0
+                    for r in [rr for rr in rows if rr['period'] == p]:
+                        key = (r[series_by] or 'metric')
+                        if key in top_keys:
+                            row[key] += float(r['total_value'] or 0.0)
+                    data_rows.append(row)
+                # Build series descriptors and config colors
+                palette = [
+                    'hsl(var(--chart-1))',
+                    'hsl(var(--chart-2))',
+                    'hsl(var(--chart-3))',
+                    'hsl(var(--chart-4))',
+                ]
+                series = []
+                config = {}
+                for i, key in enumerate(top_keys):
+                    series.append({'key': key, 'label': key.replace('_', ' ').title(), 'color': palette[i % len(palette)]})
+                    config[key] = {'label': key.replace('_', ' ').title(), 'color': palette[i % len(palette)]}
+                return {
+                    'type': 'line',
+                    'x_key': 'date',
+                    'series': series,
+                    'data': data_rows,
+                    'config': config,
+                    'meta': {
+                        'grouped_by': series_by,
+                        'period': 'month'
+                    }
+                }
+        except Exception as e:
+            logger.debug(f"Failed to build time-series chart: {e}")
+            return None
+
+    def _build_chart_data(self, results: List[Dict[str, Any]], analysis: Dict[str, Any], chart_type: str) -> Optional[Dict[str, Any]]:
+        """Construct a shadcn/Recharts-friendly chart payload from results.
+        Returns a dict with keys: type, x_key, series, data, config, meta.
+        """
+        try:
+            # Prefer aggregated SQL results
+            aggregated = [r for r in results if r['type'] == 'sql_aggregated_metric']
+            individual = [r for r in results if r['type'] in ['sql_individual_metric', 'sql_metric']]
+            vector_matches = [r for r in results if r['type'] == 'faiss_vector_match']
+            
+            data_rows: List[Dict[str, Any]] = []
+            unit = None
+            metric_name = None
+            
+            if aggregated:
+                # Build a simple bar dataset: label = metric_name (with category), value = total_value
+                for row in aggregated:
+                    d = row['data']
+                    if unit is None:
+                        unit = d.get('metric_unit')
+                    if metric_name is None:
+                        metric_name = d.get('metric_name')
+                    label = f"{d.get('metric_name','')}" if d.get('metric_name') else (d.get('metric_category') or 'metric')
+                    data_rows.append({
+                        'label': label,
+                        'value': float(d.get('total_value') or 0),
+                    })
+            elif individual:
+                # Fallback: sum values by metric_name
+                sums: Dict[str, float] = {}
+                units: Dict[str, str] = {}
+                for r in individual:
+                    d = r['data']
+                    name = d.get('metric_name') or 'metric'
+                    try:
+                        v = float(d.get('metric_value'))
+                    except (TypeError, ValueError):
+                        continue
+                    sums[name] = sums.get(name, 0.0) + v
+                    if name not in units and d.get('metric_unit'):
+                        units[name] = d.get('metric_unit')
+                # Take top 10
+                for name, total in sorted(sums.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+                    data_rows.append({'label': name, 'value': float(total)})
+                unit = next(iter(units.values()), None)
+                metric_name = None
+            elif vector_matches:
+                # Fallback: use FAISS vector results and aggregate by metric_name using metric_value from metadata
+                sums: Dict[str, float] = {}
+                units: Dict[str, str] = {}
+                for r in vector_matches:
+                    d = r.get('data', {})
+                    name = d.get('metric_name') or 'metric'
+                    # Value may be directly present or under source_info from vector_search
+                    val = d.get('metric_value')
+                    if val is None:
+                        val = d.get('value')
+                    if val is None:
+                        # source_info fields were merged; try both
+                        val = d.get('source_info.metric_value')
+                    try:
+                        v = float(val)
+                    except (TypeError, ValueError):
+                        continue
+                    sums[name] = sums.get(name, 0.0) + v
+                    unit_val = d.get('metric_unit') or d.get('unit')
+                    if name not in units and unit_val:
+                        units[name] = unit_val
+                for name, total in sorted(sums.items(), key=lambda kv: kv[1], reverse=True)[:10]:
+                    data_rows.append({'label': name, 'value': float(total)})
+                unit = next(iter(units.values()), None)
+                metric_name = None
+            else:
+                return None
+            
+            if not data_rows:
+                return None
+            
+            # Build ChartConfig compatible with shadcn/ui
+            chart_payload: Dict[str, Any] = {
+                'type': chart_type,
+                'x_key': 'label',
+                'series': [
+                    {
+                        'key': 'value',
+                        'label': 'Total',
+                        'color': 'hsl(var(--chart-1))'
+                    }
+                ],
+                'data': data_rows,
+                'config': {
+                    'value': {
+                        'label': 'Total',
+                        'color': 'hsl(var(--chart-1))'
+                    }
+                },
+                'meta': {
+                    'unit': unit,
+                    'metric_name': metric_name,
+                }
+            }
+            return chart_payload
+        except Exception as e:
+            logger.debug(f"Failed to build chart data: {e}")
+            return None
+
+    def query_structured(self, question: str, force_chart: Optional[bool] = None) -> Dict[str, Any]:
+        """Process query and return a structured response with optional chart data.
+        Keys: answer (str), show_chart (bool), chart (dict or None).
+        """
+        logger.info(f"Processing structured query: {question}")
+        # Analyze and retrieve results using existing pipeline
+        analysis = self._analyze_query(question)
+        results = self._enhanced_hybrid_search(question, analysis)
+        
+        # Try deterministic answer first
+        answer = self._try_sql_direct_answer(question, analysis, results)
+        if not answer:
+            filtered_results = self._intelligent_filter_for_gpt(results, analysis)
+            if self.openai_client and filtered_results:
+                answer = self._generate_gpt_answer(question, filtered_results)
+            else:
+                answer = self._generate_fallback_answer(question, results)
+        
+        # Visualization intent and payload
+        want_chart_default, suggested_type = self._detect_chart_intent(question, analysis)
+        want_chart = force_chart if force_chart is not None else want_chart_default
+        chart_payload = None
+        if want_chart:
+            # Prefer time-series chart when requested
+            if suggested_type == 'line' or self._is_time_series_request(question, analysis):
+                chart_payload = self._build_time_series_chart(analysis)
+            # Fallback to categorical chart
+            if chart_payload is None:
+                chart_payload = self._build_chart_data(results, analysis, suggested_type)
+            # If we wanted a chart but couldn't build one, disable
+            if chart_payload is None:
+                want_chart = False
+        
+        return {
+            'answer': answer,
+            'show_chart': bool(want_chart),
+            'chart': chart_payload
+        }
 
 
 def query_data(question: str, db_path: str = "db/impactos.db") -> str:

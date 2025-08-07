@@ -127,6 +127,11 @@ class AnalysisConfig:
     aggregation_descriptions: Dict[str, str] = None
     use_embedding_for_intent: bool = True
     use_embedding_for_framework_mapping: bool = True
+    # Optional: use LLM for intent classification
+    use_llm_for_intent: bool = False
+    llm_intent_model: str = "gpt-4o-mini"
+    llm_intent_temperature: float = 0.0
+    llm_intent_max_tokens: int = 300
     
     def __post_init__(self):
         if self.category_keywords is None:
@@ -249,6 +254,8 @@ class ConfigManager:
             'IMPACTOS_MAX_TOKENS': ('query_processing', 'gpt4_max_tokens', int),
             'IMPACTOS_MAX_RESULTS': ('query_processing', 'max_results_for_gpt', int),
             'IMPACTOS_BATCH_SIZE': ('vector_search', 'batch_size', int),
+            'IMPACTOS_USE_LLM_INTENT': ('analysis', 'use_llm_for_intent', lambda v: str(v).lower() in ('1','true','yes')),
+            'IMPACTOS_INTENT_MODEL': ('analysis', 'llm_intent_model', str)
         }
         
         for env_var, (section, key, type_func) in env_overrides.items():

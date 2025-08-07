@@ -68,11 +68,15 @@ logger = logging.getLogger(__name__)
 class QueryRequest(BaseModel):
     question: str = Field(..., description="Natural language question about the data")
     show_accuracy: bool = Field(False, description="Include verification accuracy in response")
+    force_chart: Optional[bool] = Field(None, description="Force chart rendering if possible")
 
 class QueryResponse(BaseModel):
     answer: str = Field(..., description="Answer to the question with citations")
     accuracy_summary: Optional[str] = Field(None, description="Data accuracy summary if requested")
     timestamp: datetime = Field(default_factory=datetime.now)
+    # New fields for frontend chart rendering
+    show_chart: Optional[bool] = Field(False, description="Whether the frontend should render a chart for this answer")
+    chart: Optional[Dict[str, Any]] = Field(None, description="Chart payload compatible with shadcn/Recharts: {type,x_key,series,data,config,meta}")
 
 class IngestionRequest(BaseModel):
     file_path: str = Field(..., description="Path to file to ingest")
@@ -258,8 +262,11 @@ async def query_data_endpoint(request: QueryRequest):
         
         logger.info(f"Processing web API query: {request.question}")
         
-        # Process the query
-        answer = cli.query_data(request.question)
+        # Process the query using structured response (answer + optional chart)
+        from query import QuerySystem
+        qs = QuerySystem(cli.db_path)
+        structured = qs.query_structured(request.question, force_chart=request.force_chart)
+        answer = structured.get('answer', '')
         
         # Get accuracy summary if requested
         accuracy_summary = None
@@ -268,7 +275,9 @@ async def query_data_endpoint(request: QueryRequest):
         
         return QueryResponse(
             answer=answer,
-            accuracy_summary=accuracy_summary
+            accuracy_summary=accuracy_summary,
+            show_chart=structured.get('show_chart', False),
+            chart=structured.get('chart')
         )
         
     except Exception as e:

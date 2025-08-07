@@ -71,6 +71,10 @@
     "time_patterns": ["last year", "this year", "annually", "monthly", "quarterly", "2024", "2023"],
     "category_min_similarity": 0.35,
     "aggregation_min_similarity": 0.30,
-    "framework_mapping_min_similarity": 0.35
+    "framework_mapping_min_similarity": 0.35,
+    "use_llm_for_intent": true,
+    "llm_intent_model": "gpt-4o-mini",
+    "llm_intent_temperature": 0.0,
+    "llm_intent_max_tokens": 300
   }
 }

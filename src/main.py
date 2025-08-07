@@ -315,6 +315,16 @@ Examples:
         action='store_true',
         help='Show verification accuracy in results'
     )
+    query_parser.add_argument(
+        '--structured',
+        action='store_true',
+        help='Return structured JSON including optional chart payload'
+    )
+    query_parser.add_argument(
+        '--force-chart',
+        action='store_true',
+        help='Force chart rendering when possible in structured output'
+    )
     
     # Verify command
     verify_parser = subparsers.add_parser(
@@ -371,13 +381,21 @@ def main():
             sys.exit(0 if success else 1)
             
         elif args.command == 'query':
-            answer = cli.query_data(args.question)
-            print(f"\nAnswer: {answer}")
-            
-            # Show verification summary if requested
-            if args.show_accuracy:
-                accuracy_summary = cli.get_verification_summary()
-                print(f"\nData Accuracy: {accuracy_summary}")
+            if getattr(args, 'structured', False):
+                # Structured response with optional chart payload
+                from query import QuerySystem
+                qs = QuerySystem(cli.db_path)
+                structured = qs.query_structured(args.question, force_chart=bool(getattr(args, 'force_chart', False)))
+                import json as _json
+                print(_json.dumps(structured, indent=2))
+            else:
+                answer = cli.query_data(args.question)
+                print(f"\nAnswer: {answer}")
+                
+                # Show verification summary if requested
+                if args.show_accuracy:
+                    accuracy_summary = cli.get_verification_summary()
+                    print(f"\nData Accuracy: {accuracy_summary}")
             
         elif args.command == 'verify':
             if args.target:
