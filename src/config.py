@@ -114,6 +114,36 @@ class ScalabilityConfig:
 
 
 @dataclass  
+class AnalysisConfig:
+    """Configuration for query analysis patterns and keywords."""
+    category_keywords: Dict[str, Any] = None
+    aggregation_patterns: Dict[str, Any] = None
+    time_patterns: Any = None
+    
+    def __post_init__(self):
+        if self.category_keywords is None:
+            self.category_keywords = {
+                'volunteering': ['volunteer', 'volunteering', 'community service', 'civic engagement'],
+                'donations': ['donation', 'charity', 'giving', 'contributed', 'charitable'],
+                'carbon': ['carbon', 'co2', 'emission', 'environmental', 'scope 1', 'scope 2', 'scope 3'],
+                'procurement': ['procurement', 'supplier', 'local spend', 'supply chain'],
+                'training': ['training', 'learning', 'development', 'education', 'skill'],
+                'diversity': ['diversity', 'inclusion', 'gender', 'ethnicity', 'equity'],
+                'employee': ['employee', 'staff', 'workforce', 'personnel', 'assistance']
+            }
+        if self.aggregation_patterns is None:
+            self.aggregation_patterns = {
+                'sum': ['total', 'sum', 'amount', 'how much', 'all', 'overall'],
+                'average': ['average', 'mean', 'typical'],
+                'count': ['count', 'how many', 'number of', 'quantity'],
+                'max': ['maximum', 'highest', 'most', 'largest'],
+                'min': ['minimum', 'lowest', 'least', 'smallest']
+            }
+        if self.time_patterns is None:
+            self.time_patterns = ['last year', 'this year', 'annually', 'monthly', 'quarterly', '2024', '2023']
+
+
+@dataclass  
 class SystemConfig:
     """Main system configuration container."""
     
@@ -121,6 +151,7 @@ class SystemConfig:
     query_processing: QueryProcessingConfig  
     extraction: ExtractionConfig
     scalability: ScalabilityConfig
+    analysis: AnalysisConfig
     
     # Environment settings
     environment: str = "development"  # development, staging, production
@@ -131,6 +162,7 @@ class SystemConfig:
         self.query_processing = QueryProcessingConfig()
         self.extraction = ExtractionConfig()
         self.scalability = ScalabilityConfig()
+        self.analysis = AnalysisConfig()
 
 
 class ConfigManager:
@@ -210,7 +242,8 @@ class ConfigManager:
             'vector_search': asdict(self.config.vector_search),
             'query_processing': asdict(self.config.query_processing),
             'extraction': asdict(self.config.extraction),  
-            'scalability': asdict(self.config.scalability)
+            'scalability': asdict(self.config.scalability),
+            'analysis': asdict(self.config.analysis)
         }
         
         try:

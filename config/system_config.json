@@ -50,5 +50,24 @@
     "faiss_metric_type": "METRIC_INNER_PRODUCT",
     "embedding_batch_size": 50,
     "metric_processing_batch_size": 100
+  },
+  "analysis": {
+    "category_keywords": {
+      "volunteering": ["volunteer", "volunteering", "community service", "civic engagement"],
+      "donations": ["donation", "charity", "giving", "contributed", "charitable"],
+      "carbon": ["carbon", "co2", "emission", "environmental", "scope 1", "scope 2", "scope 3"],
+      "procurement": ["procurement", "supplier", "local spend", "supply chain"],
+      "training": ["training", "learning", "development", "education", "skill"],
+      "diversity": ["diversity", "inclusion", "gender", "ethnicity", "equity"],
+      "employee": ["employee", "staff", "workforce", "personnel", "assistance"]
+    },
+    "aggregation_patterns": {
+      "sum": ["total", "sum", "amount", "how much", "all", "overall"],
+      "average": ["average", "mean", "typical"],
+      "count": ["count", "how many", "number of", "quantity"],
+      "max": ["maximum", "highest", "most", "largest"],
+      "min": ["minimum", "lowest", "least", "smallest"]
+    },
+    "time_patterns": ["last year", "this year", "annually", "monthly", "quarterly", "2024", "2023"]
   }
 }

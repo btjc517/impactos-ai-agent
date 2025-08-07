@@ -121,29 +121,15 @@ class QuerySystem:
             'query_type': 'descriptive'  # New field for query type classification
         }
         
-        # Detect categories with expanded keywords
-        category_keywords = {
-            'volunteering': ['volunteer', 'volunteering', 'community service', 'civic engagement'],
-            'donations': ['donation', 'charity', 'giving', 'contributed', 'charitable'],
-            'carbon': ['carbon', 'co2', 'emission', 'environmental', 'scope 1', 'scope 2', 'scope 3'],
-            'procurement': ['procurement', 'supplier', 'local spend', 'supply chain'],
-            'training': ['training', 'learning', 'development', 'education', 'skill'],
-            'diversity': ['diversity', 'inclusion', 'gender', 'ethnicity', 'equity'],
-            'employee': ['employee', 'staff', 'workforce', 'personnel', 'assistance']
-        }
+        # Detect categories with expanded keywords (from config)
+        category_keywords = getattr(self.config.analysis, 'category_keywords', {})
         
         for category, keywords in category_keywords.items():
             if any(keyword in question_lower for keyword in keywords):
                 analysis['categories'].append(category)
         
-        # Detect aggregations with more precision
-        aggregation_patterns = {
-            'sum': ['total', 'sum', 'amount', 'how much', 'all', 'overall'],
-            'average': ['average', 'mean', 'typical'],
-            'count': ['count', 'how many', 'number of', 'quantity'],
-            'max': ['maximum', 'highest', 'most', 'largest'],
-            'min': ['minimum', 'lowest', 'least', 'smallest']
-        }
+        # Detect aggregations (from config)
+        aggregation_patterns = getattr(self.config.analysis, 'aggregation_patterns', {})
         
         for agg_type, patterns in aggregation_patterns.items():
             if any(pattern in question_lower for pattern in patterns):
@@ -157,8 +143,8 @@ class QuerySystem:
         elif any(word in question_lower for word in ['how', 'why', 'when', 'where']):
             analysis['query_type'] = 'analytical'
         
-        # Detect time references
-        time_patterns = ['last year', 'this year', '2024', '2023', 'annually', 'monthly', 'quarterly']
+        # Detect time references (from config)
+        time_patterns = getattr(self.config.analysis, 'time_patterns', [])
         for pattern in time_patterns:
             if pattern in question_lower:
                 analysis['time_references'].append(pattern)
