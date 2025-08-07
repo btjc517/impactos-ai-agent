@@ -20,7 +20,14 @@ from pydantic import BaseModel, Field
 import uvicorn
 
 # Add src to path for imports
-sys.path.append(os.path.join(os.path.dirname(__file__)))
+src_path = os.path.dirname(__file__)
+if src_path not in sys.path:
+    sys.path.append(src_path)
+
+# Also add project root to path (for when running from project root)
+project_root = os.path.dirname(src_path)
+if project_root not in sys.path:
+    sys.path.append(project_root)
 
 # Local imports
 from main import ImpactOSCLI

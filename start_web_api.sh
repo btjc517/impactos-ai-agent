@@ -98,17 +98,16 @@ echo "Mode: $MODE"
 echo "Log Level: $LOG_LEVEL"
 echo ""
 
-# Change to src directory for imports to work correctly
-cd src
-
 # Start the service based on mode
 if [[ "$MODE" == "development" ]]; then
     echo "Starting in development mode with auto-reload..."
+    # For local development, run from src directory
+    cd src
     python web_api.py --host "$HOST" --port "$PORT" --reload --log-level "$LOG_LEVEL"
 else
     echo "Starting in production mode..."
-    # Production mode with optimized settings
-    uvicorn web_api:app \
+    # Production mode with optimized settings (run from project root)
+    uvicorn src.web_api:app \
         --host "$HOST" \
         --port "$PORT" \
         --log-level "$LOG_LEVEL" \

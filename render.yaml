@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: impactos-ai-api
+    env: python
+    plan: starter  # Free tier available
+    buildCommand: pip install -r requirements.txt
+    startCommand: python src/web_api.py --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: PORT
+        fromService:
+          type: web
+          name: impactos-ai-api
+          property: port
+      - key: OPENAI_API_KEY
+        sync: false  # Set this manually in Render dashboard
+    autoDeploy: true
+    repo: https://github.com/btjc517/impactos-ai-agent
+    branch: develop
+    rootDir: .
+    
+databases:
+  - name: impactos-sqlite
+    databaseName: impactos
+    user: impactos_user 
