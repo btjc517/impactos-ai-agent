@@ -5,6 +5,9 @@
 
 set -e
 
+# Avoid tokenizer fork/parallelism issues
+export TOKENIZERS_PARALLELISM=false
+
 # Default configuration
 HOST="0.0.0.0"
 PORT="8000"

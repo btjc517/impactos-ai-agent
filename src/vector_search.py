@@ -15,8 +15,7 @@ import logging
 from typing import List, Dict, Any, Tuple, Optional
 from sentence_transformers import SentenceTransformer
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+# Logging configured by entrypoint; avoid per-module basicConfig
 logger = logging.getLogger(__name__)
 
 
@@ -31,8 +30,11 @@ class FAISSVectorSearch:
             db_path: Path to SQLite database
             index_path: Path to FAISS index directory
         """
-        self.db_path = db_path
-        self.index_path = index_path
+        # Allow environment overrides for default paths without breaking custom callers
+        env_db = os.getenv('IMPACTOS_DB_PATH')
+        env_index = os.getenv('IMPACTOS_FAISS_INDEX_PATH')
+        self.db_path = env_db if (env_db and db_path == "db/impactos.db") else db_path
+        self.index_path = env_index if (env_index and index_path == "db/faiss_index") else index_path
         
         # Load configuration for dynamic values
         try:

@@ -11,8 +11,7 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 import logging
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+# Logging configured at entrypoints; avoid per-module basicConfig
 logger = logging.getLogger(__name__)
 
 

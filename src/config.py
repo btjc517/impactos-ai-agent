@@ -60,6 +60,11 @@ class QueryProcessingConfig:
     enable_intelligent_filtering: bool = True
     duplicate_detection: bool = True
     
+    # NEW: GPT context composition for aggregation queries
+    aggregation_ctx_max_aggregated: int = 8
+    aggregation_ctx_max_individual: int = 10
+    aggregation_ctx_max_vector: int = 5
+    
     # Performance tuning
     enable_result_caching: bool = True
     cache_ttl_seconds: int = 3600  # 1 hour

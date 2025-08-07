@@ -38,6 +38,28 @@ from frameworks import get_framework_report, apply_framework_mappings
 from verify import verify_all_data, verify_metric
 from config import get_config
 
+# Testing infrastructure imports (with try/except for optional functionality)
+try:
+    import sys
+    import os
+    testing_path = os.path.join(os.path.dirname(__file__), 'testing')
+    if testing_path not in sys.path:
+        sys.path.append(testing_path)
+    
+    from testing.test_runner import TestRunner
+    from testing.performance_tracker import PerformanceTracker
+    from testing.test_cases import TestCases
+    from testing.test_database import TestDatabase
+    TESTING_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"Testing infrastructure not available: {e}")
+    TESTING_AVAILABLE = False
+
+# Additional imports
+from vector_search import FAISSVectorSearch
+import sqlite3
+import json
+
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -92,25 +114,51 @@ class HealthResponse(BaseModel):
     openai_configured: bool = Field(..., description="OpenAI API configuration status")
     timestamp: datetime = Field(default_factory=datetime.now)
 
-# Initialize FastAPI app
-app = FastAPI(
-    title="ImpactOS AI API",
-    description="REST API for ImpactOS AI social value data analysis system",
-    version="1.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc",
-    lifespan=lifespan
-)
+class TestRequest(BaseModel):
+    test_types: Optional[List[str]] = Field(None, description="Types of tests to run (e.g., ['accuracy', 'performance'])")
+    notes: Optional[str] = Field(None, description="Notes about this test run")
 
-# Add CORS middleware for web portal integration
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins for now - configure for production
-    allow_credentials=False,  # Set to False when using allow_origins=["*"]
-    allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
-    allow_headers=["*"],
-    expose_headers=["*"],
-)
+class TestResponse(BaseModel):
+    results: Dict[str, Any] = Field(..., description="Test execution results")
+    test_run_id: Optional[int] = Field(None, description="Test run ID for tracking")
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+class PerformanceRequest(BaseModel):
+    days: int = Field(30, description="Number of days to analyze")
+    environment: Optional[str] = Field(None, description="Environment filter")
+
+class PerformanceResponse(BaseModel):
+    report: Dict[str, Any] = Field(..., description="Performance analysis report")
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+class ConfigUpdateRequest(BaseModel):
+    config_section: str = Field(..., description="Configuration section to update")
+    config_data: Dict[str, Any] = Field(..., description="Configuration data to update")
+
+class ConfigResponse(BaseModel):
+    current_config: Dict[str, Any] = Field(..., description="Current system configuration")
+    updated: bool = Field(False, description="Whether configuration was updated")
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+class DataAnalysisRequest(BaseModel):
+    analysis_type: str = Field(..., description="Type of analysis: 'metrics_summary', 'framework_coverage', 'data_quality'")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Optional filters for analysis")
+
+class DataAnalysisResponse(BaseModel):
+    analysis_type: str = Field(..., description="Type of analysis performed")
+    results: Dict[str, Any] = Field(..., description="Analysis results")
+    timestamp: datetime = Field(default_factory=datetime.now)
+
+class VectorSearchRequest(BaseModel):
+    query: str = Field(..., description="Search query")
+    limit: int = Field(10, description="Maximum number of results")
+    min_similarity: Optional[float] = Field(None, description="Minimum similarity threshold")
+
+class VectorSearchResponse(BaseModel):
+    results: List[Dict[str, Any]] = Field(..., description="Vector search results")
+    query: str = Field(..., description="Original query")
+    total_found: int = Field(..., description="Total number of results found")
+    timestamp: datetime = Field(default_factory=datetime.now)
 
 # Initialize ImpactOS CLI instance
 impactos_cli = None
@@ -135,6 +183,26 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down ImpactOS AI Web API service...")
     # Cleanup if needed
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="ImpactOS AI API",
+    description="REST API for ImpactOS AI social value data analysis system",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan
+)
+
+# Add CORS middleware for web portal integration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for now - configure for production
+    allow_credentials=False,  # Set to False when using allow_origins=["*"]
+    allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
 @app.get("/", response_model=Dict[str, str])
 @app.head("/")
@@ -412,6 +480,324 @@ async def get_configuration():
     except Exception as e:
         logger.error(f"Error getting configuration: {e}")
         raise HTTPException(status_code=500, detail=f"Configuration retrieval failed: {str(e)}")
+
+@app.post("/config", response_model=ConfigResponse)
+async def update_configuration(request: ConfigUpdateRequest):
+    """Update system configuration."""
+    try:
+        current_config = get_config()
+        
+        # For now, return current config without actually updating
+        # In production, you'd implement proper config management
+        return ConfigResponse(
+            current_config={
+                "vector_search": current_config.vector_search.__dict__,
+                "query_processing": current_config.query_processing.__dict__,
+                "extraction": current_config.extraction.__dict__,
+                "scalability": current_config.scalability.__dict__
+            },
+            updated=False  # Would be True after implementing config updates
+        )
+    except Exception as e:
+        logger.error(f"Error updating configuration: {e}")
+        raise HTTPException(status_code=500, detail=f"Configuration update failed: {str(e)}")
+
+@app.post("/test", response_model=TestResponse)
+async def run_tests(request: TestRequest):
+    """Run comprehensive test suite."""
+    if not TESTING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Testing infrastructure not available")
+    
+    try:
+        logger.info(f"Starting test suite with types: {request.test_types}")
+        
+        test_runner = TestRunner()
+        results = test_runner.run_comprehensive_test_suite(
+            test_types=request.test_types,
+            notes=request.notes
+        )
+        
+        return TestResponse(
+            results=results,
+            test_run_id=results.get('test_run_id')
+        )
+        
+    except Exception as e:
+        logger.error(f"Error running tests: {e}")
+        raise HTTPException(status_code=500, detail=f"Test execution failed: {str(e)}")
+
+@app.get("/test/performance", response_model=PerformanceResponse)
+async def get_performance_report(request: PerformanceRequest = None):
+    """Get performance analysis report."""
+    if not TESTING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Testing infrastructure not available")
+        
+    try:
+        days = request.days if request else 30
+        logger.info(f"Generating performance report for {days} days")
+        
+        tracker = PerformanceTracker()
+        report = tracker.generate_performance_report(days=days)
+        
+        return PerformanceResponse(report=report)
+        
+    except Exception as e:
+        logger.error(f"Error generating performance report: {e}")
+        raise HTTPException(status_code=500, detail=f"Performance report failed: {str(e)}")
+
+@app.get("/test/history")
+async def get_test_history(limit: int = Query(20, description="Maximum number of test runs to return")):
+    """Get test execution history."""
+    if not TESTING_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Testing infrastructure not available")
+        
+    try:
+        test_db = TestDatabase()
+        history = test_db.get_test_history(limit=limit)
+        
+        return {
+            "test_history": history,
+            "total_runs": len(history),
+            "timestamp": datetime.now()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting test history: {e}")
+        raise HTTPException(status_code=500, detail=f"Test history retrieval failed: {str(e)}")
+
+@app.post("/search/vector", response_model=VectorSearchResponse)
+async def vector_search(request: VectorSearchRequest):
+    """Perform vector search on the database."""
+    try:
+        cli = get_cli_instance()
+        
+        # Initialize vector search
+        vector_search = FAISSVectorSearch(cli.db_path)
+        
+        # Perform search
+        results = vector_search.search(
+            query=request.query,
+            k=request.limit,
+            min_similarity=request.min_similarity
+        )
+        
+        # Format results for API response
+        formatted_results = []
+        for result in results:
+            formatted_results.append({
+                "text": result.get('text', ''),
+                "similarity": result.get('similarity', 0.0),
+                "source": result.get('source', ''),
+                "metric_id": result.get('metric_id'),
+                "metadata": result.get('metadata', {})
+            })
+        
+        return VectorSearchResponse(
+            results=formatted_results,
+            query=request.query,
+            total_found=len(formatted_results)
+        )
+        
+    except Exception as e:
+        logger.error(f"Error in vector search: {e}")
+        raise HTTPException(status_code=500, detail=f"Vector search failed: {str(e)}")
+
+@app.post("/analyze", response_model=DataAnalysisResponse)
+async def analyze_data(request: DataAnalysisRequest):
+    """Perform advanced data analysis."""
+    try:
+        cli = get_cli_instance()
+        results = {}
+        
+        if request.analysis_type == "metrics_summary":
+            results = _get_metrics_summary(cli.db_path, request.filters)
+        elif request.analysis_type == "framework_coverage":
+            results = _get_framework_coverage(cli.db_path, request.filters)
+        elif request.analysis_type == "data_quality":
+            results = _get_data_quality_analysis(cli.db_path, request.filters)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown analysis type: {request.analysis_type}")
+        
+        return DataAnalysisResponse(
+            analysis_type=request.analysis_type,
+            results=results
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in data analysis: {e}")
+        raise HTTPException(status_code=500, detail=f"Data analysis failed: {str(e)}")
+
+@app.get("/metrics/live")
+async def get_live_metrics():
+    """Get real-time system metrics."""
+    try:
+        cli = get_cli_instance()
+        
+        # Database metrics
+        db_stats = {}
+        with sqlite3.connect(cli.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Count metrics by type
+            cursor.execute("SELECT COUNT(*) FROM impact_metrics")
+            db_stats['total_metrics'] = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(DISTINCT source_id) FROM impact_metrics")
+            db_stats['unique_sources'] = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT AVG(verification_accuracy) FROM impact_metrics WHERE verification_accuracy IS NOT NULL")
+            result = cursor.fetchone()[0]
+            db_stats['avg_accuracy'] = result if result else 0.0
+            
+            # Framework mapping stats
+            cursor.execute("""
+                SELECT framework_name, COUNT(*) 
+                FROM framework_mappings 
+                GROUP BY framework_name
+            """)
+            framework_stats = dict(cursor.fetchall())
+            
+        # Vector search stats
+        vector_stats = {}
+        try:
+            vector_search = FAISSVectorSearch(cli.db_path)
+            if hasattr(vector_search, 'index') and vector_search.index:
+                vector_stats['total_vectors'] = vector_search.index.ntotal
+            else:
+                vector_stats['total_vectors'] = 0
+        except:
+            vector_stats['total_vectors'] = 0
+        
+        return {
+            "database_stats": db_stats,
+            "framework_stats": framework_stats,
+            "vector_stats": vector_stats,
+            "system_health": "healthy",
+            "timestamp": datetime.now()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting live metrics: {e}")
+        raise HTTPException(status_code=500, detail=f"Live metrics failed: {str(e)}")
+
+# Helper functions for data analysis
+def _get_metrics_summary(db_path: str, filters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Get comprehensive metrics summary."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Basic counts
+        cursor.execute("SELECT COUNT(*) as total FROM impact_metrics")
+        total_metrics = cursor.fetchone()['total']
+        
+        cursor.execute("SELECT COUNT(DISTINCT source_id) as unique_sources FROM impact_metrics")
+        unique_sources = cursor.fetchone()['unique_sources']
+        
+        # Accuracy distribution
+        cursor.execute("""
+            SELECT 
+                AVG(verification_accuracy) as avg_accuracy,
+                MIN(verification_accuracy) as min_accuracy,
+                MAX(verification_accuracy) as max_accuracy
+            FROM impact_metrics 
+            WHERE verification_accuracy IS NOT NULL
+        """)
+        accuracy_stats = dict(cursor.fetchone())
+        
+        # Metric categories distribution
+        cursor.execute("""
+            SELECT metric_category, COUNT(*) as count
+            FROM impact_metrics
+            GROUP BY metric_category
+            ORDER BY count DESC
+        """)
+        metric_types = [dict(row) for row in cursor.fetchall()]
+        
+        return {
+            "total_metrics": total_metrics,
+            "unique_sources": unique_sources,
+            "accuracy_stats": accuracy_stats,
+            "metric_types_distribution": metric_types
+        }
+
+def _get_framework_coverage(db_path: str, filters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Get framework mapping coverage analysis."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Framework mapping distribution
+        cursor.execute("""
+            SELECT 
+                fm.framework_name,
+                fm.framework_category,
+                COUNT(*) as usage_count
+            FROM framework_mappings fm
+            JOIN impact_metrics im ON fm.impact_metric_id = im.id
+            GROUP BY fm.framework_name, fm.framework_category
+            ORDER BY usage_count DESC
+        """)
+        mappings = [dict(row) for row in cursor.fetchall()]
+        
+        # Coverage by framework name
+        cursor.execute("""
+            SELECT 
+                fm.framework_name,
+                COUNT(DISTINCT fm.impact_metric_id) as mapped_metrics,
+                (SELECT COUNT(*) FROM impact_metrics) as total_metrics
+            FROM framework_mappings fm
+            GROUP BY fm.framework_name
+        """)
+        coverage = [dict(row) for row in cursor.fetchall()]
+        
+        for c in coverage:
+            c['coverage_percentage'] = (c['mapped_metrics'] / c['total_metrics'] * 100) if c['total_metrics'] > 0 else 0
+        
+        return {
+            "framework_mappings": mappings,
+            "coverage_by_framework": coverage
+        }
+
+def _get_data_quality_analysis(db_path: str, filters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Get data quality analysis."""
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        # Verification status distribution
+        cursor.execute("""
+            SELECT 
+                CASE 
+                    WHEN verification_accuracy >= 0.9 THEN 'High Quality'
+                    WHEN verification_accuracy >= 0.7 THEN 'Medium Quality'
+                    WHEN verification_accuracy >= 0.5 THEN 'Low Quality'
+                    ELSE 'Poor Quality'
+                END as quality_tier,
+                COUNT(*) as count
+            FROM impact_metrics
+            WHERE verification_accuracy IS NOT NULL
+            GROUP BY quality_tier
+        """)
+        quality_distribution = [dict(row) for row in cursor.fetchall()]
+        
+        # Missing data analysis
+        cursor.execute("""
+            SELECT 
+                SUM(CASE WHEN verification_accuracy IS NULL THEN 1 ELSE 0 END) as missing_accuracy,
+                SUM(CASE WHEN metric_value IS NULL THEN 1 ELSE 0 END) as missing_values,
+                SUM(CASE WHEN metric_unit IS NULL THEN 1 ELSE 0 END) as missing_units,
+                COUNT(*) as total
+            FROM impact_metrics
+        """)
+        missing_data = dict(cursor.fetchone())
+        
+        return {
+            "quality_distribution": quality_distribution,
+            "missing_data_analysis": missing_data
+        }
 
 def create_app(host: str = "0.0.0.0", port: int = 8000) -> FastAPI:
     """Create and configure the FastAPI app."""

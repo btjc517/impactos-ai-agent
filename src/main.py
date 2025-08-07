@@ -13,6 +13,9 @@ import logging
 from typing import Optional
 import sqlite3
 
+# Disable tokenizer parallelism warnings/deadlocks by default
+os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
+
 # Add src to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__)))
 
@@ -31,7 +34,7 @@ class ImpactOSCLI:
     
     def __init__(self):
         """Initialize CLI with database connection."""
-        self.db_path = "db/impactos.db"
+        self.db_path = os.getenv('IMPACTOS_DB_PATH', 'db/impactos.db')
         self.db_schema = DatabaseSchema(self.db_path)
         self.ensure_database_initialized()
     

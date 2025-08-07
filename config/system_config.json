@@ -25,7 +25,10 @@
     "enable_intelligent_filtering": true,
     "duplicate_detection": true,
     "enable_result_caching": true,
-    "cache_ttl_seconds": 3600
+    "cache_ttl_seconds": 3600,
+    "aggregation_ctx_max_aggregated": 8,
+    "aggregation_ctx_max_individual": 10,
+    "aggregation_ctx_max_vector": 5
   },
   "extraction": {
     "gpt4_max_tokens_extraction": 4000,

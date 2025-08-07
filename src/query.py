@@ -28,8 +28,7 @@ from frameworks import FrameworkMapper
 from vector_search import FAISSVectorSearch
 from config import get_config, get_config_manager
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
+# Setup logging is configured at the entrypoint; avoid per-module basicConfig
 logger = logging.getLogger(__name__)
 
 
@@ -49,7 +48,6 @@ class QuerySystem:
         
         # Initialize AI components
         self.openai_client = self._initialize_openai()
-        self.embedding_model = self._initialize_embedding_model()
         self.vector_search = FAISSVectorSearch(db_path)  # Proper FAISS vector search
         
         # Load dynamic configuration (replaces hardcoded values)
@@ -69,16 +67,6 @@ class QuerySystem:
             return client
         except Exception as e:
             logger.error(f"Failed to initialize OpenAI client: {e}")
-            return None
-    
-    def _initialize_embedding_model(self) -> Optional[SentenceTransformer]:
-        """Initialize sentence transformer for query embeddings."""
-        try:
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("Embedding model initialized successfully")
-            return model
-        except Exception as e:
-            logger.error(f"Failed to initialize embedding model: {e}")
             return None
     
     def query(self, question: str) -> str:
@@ -426,9 +414,12 @@ class QuerySystem:
             individual = [r for r in results if r['type'] in ['sql_individual_metric', 'sql_metric']]
             faiss_results = [r for r in results if r['type'] == 'faiss_vector_match']
             
-            # Take all aggregated results, top individual results, and some FAISS results
-            max_results = self.config.query_processing.max_results_for_gpt
-            filtered = aggregated[:5] + individual[:8] + faiss_results[:2]
+            # Take configurable slices of each group
+            cfg = self.config.query_processing
+            max_aggr = getattr(cfg, 'aggregation_ctx_max_aggregated', 5)
+            max_ind = getattr(cfg, 'aggregation_ctx_max_individual', 8)
+            max_vec = getattr(cfg, 'aggregation_ctx_max_vector', 2)
+            filtered = aggregated[:max_aggr] + individual[:max_ind] + faiss_results[:max_vec]
             filtered = filtered[:max_results]
         else:
             # For other queries, take top results by relevance
@@ -516,6 +507,29 @@ class QuerySystem:
                     f"Confidence: {data['extraction_confidence']:.2f}{framework_text})"
                 )
             
+            # Include vector results to ensure GPT has context even when SQL-based results are absent
+            if vector_results:
+                for i, result in enumerate(vector_results[:5]):  # Limit vector results for prompt brevity
+                    data = result['data']
+                    similarity = result.get('similarity_score', 0.0)
+                    frameworks = self._get_framework_mappings(
+                        data.get('metric_name', ''), 
+                        data.get('metric_category', '')
+                    )
+                    framework_text = f" | Frameworks: {'; '.join(frameworks)}" if frameworks else ""
+                    text_preview = (data.get('text_chunk') or data.get('text') or '')[:200]
+                    filename = data.get('filename', 'Unknown')
+                    category = (data.get('metric_category') or 'context').title()
+                    
+                    context_parts.append(
+                        f"[{len(context_parts)+1}] VECTOR: {category}: {text_preview}... "
+                        f"(Similarity: {similarity:.3f} | Source: {filename}{framework_text})"
+                    )
+            
+            # If we still have no context, use the fallback answer
+            if not context_parts:
+                return self._generate_fallback_answer(question, results)
+            
             context = '\n'.join(context_parts)
             
             prompt = f"""
@@ -553,7 +567,6 @@ class QuerySystem:
             
             answer = response.choices[0].message.content.strip()
             return answer
-            
         except Exception as e:
             logger.error(f"Error generating GPT answer: {e}")
             return self._generate_fallback_answer(question, results)
