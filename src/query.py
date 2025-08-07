@@ -121,19 +121,55 @@ class QuerySystem:
             'query_type': 'descriptive'  # New field for query type classification
         }
         
-        # Detect categories with expanded keywords (from config)
-        category_keywords = getattr(self.config.analysis, 'category_keywords', {})
+        # Prefer embedding-based intent detection if available
+        cfg = getattr(self.config, 'analysis', None)
+        used_embedding_intent = False
+        if cfg and getattr(cfg, 'use_embedding_for_intent', False) and self.vector_search and self.vector_search.embedding_model:
+            try:
+                query_vec = self.vector_search.embedding_model.encode([question])[0]
+                # Prepare prototypes
+                category_texts = list(cfg.category_descriptions.values()) if getattr(cfg, 'category_descriptions', None) else []
+                category_labels = list(cfg.category_descriptions.keys()) if getattr(cfg, 'category_descriptions', None) else []
+                agg_texts = list(cfg.aggregation_descriptions.values()) if getattr(cfg, 'aggregation_descriptions', None) else []
+                agg_labels = list(cfg.aggregation_descriptions.keys()) if getattr(cfg, 'aggregation_descriptions', None) else []
+                
+                # Encode prototypes
+                cat_vecs = self.vector_search.embedding_model.encode(category_texts) if category_texts else []
+                agg_vecs = self.vector_search.embedding_model.encode(agg_texts) if agg_texts else []
+                
+                # Cosine similarity
+                def cos_sim(a, b):
+                    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-12))
+                
+                # Categories
+                for label, proto_vec in zip(category_labels, cat_vecs):
+                    sim = cos_sim(query_vec, proto_vec)
+                    if sim >= cfg.category_min_similarity:
+                        analysis['categories'].append(label)
+                
+                # Aggregations
+                for label, proto_vec in zip(agg_labels, agg_vecs):
+                    sim = cos_sim(query_vec, proto_vec)
+                    if sim >= cfg.aggregation_min_similarity:
+                        analysis['aggregations'].append(label)
+                used_embedding_intent = True
+            except Exception as e:
+                logger.warning(f"Embedding-based intent detection failed, falling back to keywords: {e}")
+                used_embedding_intent = False
         
-        for category, keywords in category_keywords.items():
-            if any(keyword in question_lower for keyword in keywords):
-                analysis['categories'].append(category)
-        
-        # Detect aggregations (from config)
-        aggregation_patterns = getattr(self.config.analysis, 'aggregation_patterns', {})
-        
-        for agg_type, patterns in aggregation_patterns.items():
-            if any(pattern in question_lower for pattern in patterns):
-                analysis['aggregations'].append(agg_type)
+        # Fallback or complement with keyword matching
+        if not used_embedding_intent:
+            # Detect categories with expanded keywords (from config)
+            category_keywords = getattr(self.config.analysis, 'category_keywords', {})
+            for category, keywords in category_keywords.items():
+                if any(keyword in question_lower for keyword in keywords):
+                    analysis['categories'].append(category)
+            
+            # Detect aggregations (from config)
+            aggregation_patterns = getattr(self.config.analysis, 'aggregation_patterns', {})
+            for agg_type, patterns in aggregation_patterns.items():
+                if any(pattern in question_lower for pattern in patterns):
+                    analysis['aggregations'].append(agg_type)
         
         # Classify query type for intelligent processing
         if analysis['aggregations']:

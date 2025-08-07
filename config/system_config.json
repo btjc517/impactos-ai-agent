@@ -68,6 +68,9 @@
       "max": ["maximum", "highest", "most", "largest"],
       "min": ["minimum", "lowest", "least", "smallest"]
     },
-    "time_patterns": ["last year", "this year", "annually", "monthly", "quarterly", "2024", "2023"]
+    "time_patterns": ["last year", "this year", "annually", "monthly", "quarterly", "2024", "2023"],
+    "category_min_similarity": 0.35,
+    "aggregation_min_similarity": 0.30,
+    "framework_mapping_min_similarity": 0.35
   }
 }

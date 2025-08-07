@@ -119,6 +119,14 @@ class AnalysisConfig:
     category_keywords: Dict[str, Any] = None
     aggregation_patterns: Dict[str, Any] = None
     time_patterns: Any = None
+    category_min_similarity: float = 0.35
+    aggregation_min_similarity: float = 0.30
+    framework_mapping_min_similarity: float = 0.35
+    # Descriptive prototypes for embedding-based intent detection
+    category_descriptions: Dict[str, str] = None
+    aggregation_descriptions: Dict[str, str] = None
+    use_embedding_for_intent: bool = True
+    use_embedding_for_framework_mapping: bool = True
     
     def __post_init__(self):
         if self.category_keywords is None:
@@ -141,6 +149,24 @@ class AnalysisConfig:
             }
         if self.time_patterns is None:
             self.time_patterns = ['last year', 'this year', 'annually', 'monthly', 'quarterly', '2024', '2023']
+        if self.category_descriptions is None:
+            self.category_descriptions = {
+                'volunteering': 'questions about volunteering, volunteer hours, community service time',
+                'donations': 'questions about donations, charitable giving, matched giving amounts',
+                'carbon': 'questions about carbon emissions, CO2, environmental impact across scopes',
+                'procurement': 'questions about procurement spend, suppliers, local supply chain',
+                'training': 'questions about employee training, learning, development hours or courses',
+                'diversity': 'questions about diversity, inclusion, representation, equality metrics',
+                'employee': 'questions about employees, workforce assistance, EAP usage, staff metrics'
+            }
+        if self.aggregation_descriptions is None:
+            self.aggregation_descriptions = {
+                'sum': 'asks for totals, sums, overall amount across records',
+                'average': 'asks for average, mean typical value',
+                'count': 'asks how many, number of items, count of records',
+                'max': 'asks for maximum, highest, most, largest value',
+                'min': 'asks for minimum, lowest, least, smallest value'
+            }
 
 
 @dataclass  
