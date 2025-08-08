@@ -51,10 +51,10 @@ class QueryProcessingConfig:
     descriptive_result_limit: int = 100  # Increased from 50  
     analytical_result_limit: int = 75   # Increased from 30
     
-    # GPT-4 Processing limits
+    # GPT Processing limits
     gpt4_max_tokens: int = 2000  # Increased from 1000 for comprehensive answers
     gpt4_temperature: float = 0.1
-    gpt4_model: str = "gpt-4"
+    gpt4_model: str = "gpt-5-mini"
     
     # Result filtering
     enable_intelligent_filtering: bool = True
@@ -78,6 +78,10 @@ class ExtractionConfig:
     gpt4_max_tokens_extraction: int = 4000  # For complex extractions
     gpt4_max_tokens_analysis: int = 3000    # For structure analysis
     gpt4_max_tokens_verification: int = 2500 # For verification
+    
+    # Ingestion models (run infrequently)
+    structure_analysis_model: str = "gpt-5"
+    query_generation_model: str = "gpt-5"
     
     # Extraction accuracy
     confidence_threshold: float = 0.7  # Minimum confidence for acceptance
@@ -129,7 +133,7 @@ class AnalysisConfig:
     use_embedding_for_framework_mapping: bool = True
     # Optional: use LLM for intent classification
     use_llm_for_intent: bool = False
-    llm_intent_model: str = "gpt-4o-mini"
+    llm_intent_model: str = "gpt-5-nano"
     llm_intent_temperature: float = 0.0
     llm_intent_max_tokens: int = 300
     

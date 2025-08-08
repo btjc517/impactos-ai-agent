@@ -387,11 +387,13 @@ class DataIngestion:
             NEVER make up cell references - only include metrics you can precisely locate.
             """
 
+            from config import get_config
+            cfg = get_config()
             response = self.openai_client.chat.completions.create(
-                model="gpt-4",
+                model=getattr(cfg.extraction, 'query_generation_model', 'gpt-5'),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=4000
+                max_tokens=getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 4000)
             )
 
             result_text = response.choices[0].message.content.strip()
