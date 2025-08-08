@@ -275,7 +275,7 @@ class TestRunner:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     temperature=self.config.query_processing.gpt4_temperature,
-                    max_tokens=self.config.query_processing.gpt4_max_tokens,
+                    max_completion_tokens=self.config.query_processing.gpt4_max_tokens,
                     response_time=gpt_time,
                     response_length=len(answer),
                     truncated=len(answer) > (self.config.query_processing.gpt4_max_tokens * 3)  # Rough estimate

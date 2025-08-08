@@ -238,7 +238,7 @@ class QueryBasedExtraction:
                 model=getattr(cfg.extraction, 'structure_analysis_model', 'gpt-5'),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=getattr(cfg.extraction, 'gpt4_max_tokens_analysis', 3000)
+                max_completion_tokens=getattr(cfg.extraction, 'gpt4_max_tokens_analysis', 3000)
             )
 
             result_text = response.choices[0].message.content.strip()
@@ -445,7 +445,7 @@ class QueryBasedExtraction:
                 model=getattr(cfg.extraction, 'query_generation_model', 'gpt-5'),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,
-                max_tokens=getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 2500)
+                max_completion_tokens=getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 2500)
             )
 
             result_text = response.choices[0].message.content.strip()

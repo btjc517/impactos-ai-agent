@@ -250,7 +250,7 @@ class QuerySystem:
                 model=cfg.llm_intent_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=cfg.llm_intent_temperature,
-                max_tokens=cfg.llm_intent_max_tokens
+                max_completion_tokens=cfg.llm_intent_max_tokens
             )
             import json as _json
             content = resp.choices[0].message.content.strip()
@@ -751,7 +751,7 @@ class QuerySystem:
                 model=self.config.query_processing.gpt4_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.query_processing.gpt4_temperature,
-                max_tokens=self.config.query_processing.gpt4_max_tokens
+                max_completion_tokens=self.config.query_processing.gpt4_max_tokens
             )
             
             answer = response.choices[0].message.content.strip()
