@@ -593,12 +593,14 @@ async def vector_search(request: VectorSearchRequest):
         # Format results for API response
         formatted_results = []
         for result in results:
+            # Adapt to FAISSVectorSearch result structure
+            data = result.get('data', {}) if isinstance(result, dict) else {}
             formatted_results.append({
-                "text": result.get('text', ''),
-                "similarity": result.get('similarity', 0.0),
-                "source": result.get('source', ''),
-                "metric_id": result.get('metric_id'),
-                "metadata": result.get('metadata', {})
+                "text": data.get('text_chunk', ''),
+                "similarity": result.get('similarity_score', 0.0),
+                "source": data.get('filename', ''),
+                "metric_id": data.get('metric_id'),
+                "metadata": data
             })
         
         return VectorSearchResponse(
@@ -610,6 +612,19 @@ async def vector_search(request: VectorSearchRequest):
     except Exception as e:
         logger.error(f"Error in vector search: {e}")
         raise HTTPException(status_code=500, detail=f"Vector search failed: {str(e)}")
+
+@app.post("/search/rebuild-index")
+async def rebuild_faiss_index():
+    """Rebuild FAISS index from database embeddings without re-ingesting files."""
+    try:
+        cli = get_cli_instance()
+        vector_search = FAISSVectorSearch(cli.db_path)
+        vector_search.rebuild_index_from_database()
+        stats = vector_search.get_stats() if hasattr(vector_search, 'get_stats') else {}
+        return {"status": "ok", "stats": stats, "timestamp": datetime.now()}
+    except Exception as e:
+        logger.error(f"Error rebuilding FAISS index: {e}")
+        raise HTTPException(status_code=500, detail=f"Rebuild index failed: {str(e)}")
 
 @app.post("/analyze", response_model=DataAnalysisResponse)
 async def analyze_data(request: DataAnalysisRequest):

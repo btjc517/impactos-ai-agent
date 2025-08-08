@@ -210,7 +210,6 @@ class FAISSVectorSearch:
                 # Get all text chunks and generate embeddings
                 cursor.execute("""
                     SELECT 
-                        e.text_chunk,
                         e.chunk_type,
                         e.metric_id,
                         im.metric_name,
@@ -241,7 +240,27 @@ class FAISSVectorSearch:
                 embeddings_to_add = []
                 
                 for row in rows:
-                    text_chunk = row['text_chunk']
+                    # Compose a richer, vendor-aware text chunk for better recall
+                    filename = row['filename'] or ''
+                    vendor_name = None
+                    try:
+                        base_no_ext = os.path.splitext(filename)[0]
+                        tokens = [t for t in base_no_ext.split('_') if t]
+                        if len(tokens) >= 2:
+                            vendor_name = tokens[1]
+                        elif tokens:
+                            vendor_name = tokens[0]
+                    except Exception:
+                        vendor_name = None
+                    vendor_part = f"Vendor: {vendor_name}; " if vendor_name else ""
+                    source_part = f"Source: {filename}; " if filename else ""
+                    text_chunk = (
+                        f"{source_part}{vendor_part}"
+                        f"Metric: {row['metric_name'] or ''} "
+                        f"Value: {row['metric_value']} {row['metric_unit'] or ''} "
+                        f"Category: {row['metric_category'] or ''} "
+                        f"Context: {row['context_description'] or ''}"
+                    )
                     
                     # Generate vector embedding
                     vector = self.embedding_model.encode([text_chunk])[0]
@@ -253,7 +272,7 @@ class FAISSVectorSearch:
                         'chunk_type': row['chunk_type'],
                         'metric_name': row['metric_name'] or '',
                         'metric_category': row['metric_category'] or '',
-                        'filename': row['filename'] or '',
+                        'filename': filename,
                         'source_info': {
                             'metric_value': row['metric_value'],
                             'metric_unit': row['metric_unit'],

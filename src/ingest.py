@@ -551,8 +551,24 @@ class DataIngestion:
     def _create_embedding(self, metric: Dict[str, Any], metric_id: int, cursor: sqlite3.Cursor):
         """Create and store embedding for metric."""
         try:
+            # Determine source filename and vendor token for richer embedding context
+            file_name = os.path.basename(self.current_file_path) if hasattr(self, 'current_file_path') else 'unknown'
+            vendor_name = None
+            try:
+                base_no_ext = os.path.splitext(file_name)[0]
+                tokens = [t for t in base_no_ext.split('_') if t]
+                if len(tokens) >= 2:
+                    vendor_name = tokens[1]
+                elif tokens:
+                    vendor_name = tokens[0]
+            except Exception:
+                vendor_name = None
+            vendor_part = f"Vendor: {vendor_name}; " if vendor_name else ""
+            source_part = f"Source: {file_name}; " if file_name else ""
+
             # Create text representation for embedding
             text_chunk = (
+                f"{source_part}{vendor_part}"
                 f"Metric: {metric['metric_name']} "
                 f"Value: {metric['metric_value']} {metric['metric_unit']} "
                 f"Category: {metric['metric_category']} "
@@ -600,7 +616,7 @@ class DataIngestion:
                 'chunk_type': 'metric',
                 'metric_name': metric['metric_name'],
                 'metric_category': metric['metric_category'],
-                'filename': os.path.basename(self.current_file_path) if hasattr(self, 'current_file_path') else 'unknown',
+                'filename': file_name,
                 'enhanced_metadata': enhanced_metadata,
                 'source_info': {
                     'metric_value': metric['metric_value'],
