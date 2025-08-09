@@ -392,8 +392,8 @@ class DataIngestion:
             response = self.openai_client.chat.completions.create(
                 model=getattr(cfg.extraction, 'query_generation_model', 'gpt-5'),
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_completion_tokens=getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 4000)
+                # Temperature unused for GPT-5-only setup
+                max_completion_tokens=getattr(cfg.extraction, 'extraction_max_tokens', getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 4000))
             )
 
             result_text = response.choices[0].message.content.strip()

@@ -27,6 +27,11 @@ from schema import DatabaseSchema
 from frameworks import FrameworkMapper
 from vector_search import FAISSVectorSearch
 from config import get_config, get_config_manager
+from llm_utils import (
+    choose_model,
+    call_chat_completion,
+    should_escalate_answer,
+)
 
 # Setup logging is configured at the entrypoint; avoid per-module basicConfig
 logger = logging.getLogger(__name__)
@@ -71,8 +76,8 @@ class QuerySystem:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             return None
     
-    def _build_answer_cache_key(self, question: str, results: List[Dict[str, Any]]) -> str:
-        """Create a stable cache key from question and top source filenames."""
+    def _build_answer_cache_key(self, question: str, results: List[Dict[str, Any]], model_name: Optional[str] = None) -> str:
+        """Create a stable cache key from question, top source filenames, and model."""
         try:
             filenames = []
             for r in results[:10]:
@@ -80,10 +85,13 @@ class QuerySystem:
                 fn = data.get('filename') or data.get('filenames') or ''
                 if isinstance(fn, str):
                     filenames.append(fn)
-            key = question.strip().lower() + '||' + '|'.join(sorted(set(filenames)))
+            parts = [question.strip().lower(), '|'.join(sorted(set(filenames)))]
+            if model_name:
+                parts.append(model_name)
+            key = '||'.join(parts)
             return key
         except Exception:
-            return question.strip().lower()
+            return question.strip().lower() if not model_name else f"{question.strip().lower()}||{model_name}"
 
     def _try_sql_direct_answer(self, question: str, analysis: Dict[str, Any], results: List[Dict[str, Any]]) -> Optional[str]:
         """Attempt to generate a deterministic aggregation answer without GPT.
@@ -198,7 +206,7 @@ class QuerySystem:
             # 2.5 SQL-first deterministic answer for aggregations
             direct_answer = self._try_sql_direct_answer(question, query_analysis, results)
             if direct_answer:
-                cache_key = self._build_answer_cache_key(question, results)
+                cache_key = self._build_answer_cache_key(question, results, getattr(self, '_last_answer_model', None))
                 self._answer_cache[cache_key] = direct_answer
                 self._answer_cache[provisional_key] = direct_answer
                 logger.info("Returning SQL-first deterministic answer (no GPT)")
@@ -216,7 +224,7 @@ class QuerySystem:
                 answer = self._generate_fallback_answer(question, results)
             
             # Store in cache with stronger key after retrieval
-            cache_key = self._build_answer_cache_key(question, results)
+            cache_key = self._build_answer_cache_key(question, results, getattr(self, '_last_answer_model', None))
             self._answer_cache[cache_key] = answer
             self._answer_cache[provisional_key] = answer
             logger.info("Query processing completed")
@@ -246,15 +254,66 @@ class QuerySystem:
                 "Return strict JSON with keys: categories (list of strings), aggregations (list of strings), query_type (string).\n"
                 f"Question: {question}"
             )
-            resp = self.openai_client.chat.completions.create(
-                model=cfg.llm_intent_model,
+            # Use centralized GPT-5 params with JSON enforcement and escalation
+            from llm_utils import choose_model, call_chat_completion
+            p = choose_model('intent')
+            content, meta = call_chat_completion(
+                self.openai_client,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=cfg.llm_intent_temperature,
-                max_completion_tokens=cfg.llm_intent_max_tokens
+                model=p['model'],
+                max_tokens=p['max_tokens'],
+                reasoning=p.get('reasoning'),
+                text=p.get('text'),
+                enforce_json=True,
             )
             import json as _json
-            content = resp.choices[0].message.content.strip()
-            data = _json.loads(content)
+            data = None
+            try:
+                data = _json.loads(content) if content else None
+            except Exception:
+                data = None
+            # Escalate if low confidence or malformed
+            def _needs_escalation(d):
+                if not d:
+                    return True
+                cats = d.get('categories') or []
+                aggs = d.get('aggregations') or []
+                qtype = d.get('query_type')
+                if qtype not in ('aggregation','descriptive','analytical'):
+                    return True
+                # proxy confidence check: require at least one label
+                return not (cats or aggs)
+            if getattr(self.config.llm, 'escalation_enabled', True) and _needs_escalation(data):
+                # escalate to mini
+                    content2, _ = call_chat_completion(
+                    self.openai_client,
+                    messages=[{"role": "user", "content": prompt}],
+                        model='gpt-5-mini',
+                        max_tokens=p['max_tokens'],
+                    reasoning={'effort': 'low'},
+                    text=p.get('text'),
+                    enforce_json=True,
+                )
+                try:
+                    d2 = _json.loads(content2) if content2 else None
+                except Exception:
+                    d2 = None
+                data = d2 or data
+                if _needs_escalation(data):
+                    content3, _ = call_chat_completion(
+                        self.openai_client,
+                        messages=[{"role": "user", "content": prompt}],
+                        model='gpt-5',
+                        max_tokens=p['max_tokens'],
+                        reasoning={'effort': 'low'},
+                        text=p.get('text'),
+                        enforce_json=True,
+                    )
+                    try:
+                        d3 = _json.loads(content3) if content3 else None
+                    except Exception:
+                        d3 = None
+                    data = d3 or data
             if isinstance(data, dict):
                 self._intent_cache[question] = data
                 return data
@@ -747,17 +806,56 @@ class QuerySystem:
             [For each source, include: filename, cell references, and framework mappings when available]
             """
             
-            response = self.openai_client.chat.completions.create(
-                model=self.config.query_processing.gpt4_model,
+            base_params = choose_model('answer')
+            content, meta = call_chat_completion(
+                self.openai_client,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=self.config.query_processing.gpt4_temperature,
-                max_completion_tokens=self.config.query_processing.gpt4_max_tokens
+                model=base_params['model'],
+                max_tokens=base_params['max_tokens'],
+                reasoning=base_params.get('reasoning'),
+                text=base_params.get('text'),
+                enforce_json=False,
             )
-            
-            answer = response.choices[0].message.content.strip()
+            answer = (content or '').strip()
+            used_model = base_params['model']
+
+            # Check guardrails for escalation
+            escalate = False
+            reason = ''
+            if getattr(self.config.llm, 'escalation_enabled', True):
+                escalate, reason = should_escalate_answer(
+                    answer_text=answer,
+                    context_count=len(context_parts),
+                    latency_ms=meta.get('latency_ms', 0),
+                    qa_cfg=self.config.qa,
+                )
+            if escalate:
+                logger.info(f"Escalating answer synthesis due to: {reason}")
+                high_params = base_params.copy()
+                high_params['model'] = 'gpt-5'
+                high_params['max_tokens'] = max(4000, base_params.get('max_tokens', 2000))
+                high_params['reasoning'] = {'effort': 'high'}
+                content2, meta2 = call_chat_completion(
+                    self.openai_client,
+                    messages=[{"role": "user", "content": prompt}],
+                    model=high_params['model'],
+                    max_tokens=high_params['max_tokens'],
+                    reasoning=high_params.get('reasoning'),
+                    text=high_params.get('text'),
+                    enforce_json=False,
+                )
+                if content2:
+                    ans2 = content2.strip()
+                    esc_again, _ = should_escalate_answer(
+                        ans2, len(context_parts), meta2.get('latency_ms', 0), self.config.qa
+                    )
+                    if not esc_again:
+                        answer = ans2
+                        used_model = high_params['model']
             # Sanitize any residual "cannot provide graph" disclaimers if graph requested
             if graph_requested:
                 answer = self._sanitize_graph_language(answer)
+            self._last_answer_model = used_model
             return answer
         except Exception as e:
             logger.error(f"Error generating GPT answer: {e}")

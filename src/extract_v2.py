@@ -21,6 +21,13 @@ import logging
 from sentence_transformers import SentenceTransformer
 import openai
 from openai import OpenAI
+from llm_utils import (
+    choose_model,
+    call_chat_completion,
+    validate_structure_analysis,
+    validate_extraction_metrics,
+    repair_with_model,
+)
 
 # Local imports
 from schema import DatabaseSchema
@@ -234,14 +241,16 @@ class QueryBasedExtraction:
 
             from config import get_config
             cfg = get_config()
-            response = self.openai_client.chat.completions.create(
-                model=getattr(cfg.extraction, 'structure_analysis_model', 'gpt-5'),
+            params = choose_model('structure_analysis')
+            result_text, meta = call_chat_completion(
+                self.openai_client,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_completion_tokens=getattr(cfg.extraction, 'gpt4_max_tokens_analysis', 3000)
+                model=params['model'],
+                max_tokens=params['max_tokens'],
+                reasoning=params.get('reasoning'),
+                text=params.get('text'),
+                enforce_json=True,
             )
-
-            result_text = response.choices[0].message.content.strip()
             
             # Parse and validate the structure analysis
             try:
@@ -254,14 +263,12 @@ class QueryBasedExtraction:
                 cleaned_response = cleaned_response.strip()
                 
                 structure_analysis = json.loads(cleaned_response)
-                
-                # Validate required fields
-                required_keys = ['data_overview', 'column_analysis', 'identified_metrics']
-                if all(key in structure_analysis for key in required_keys):
-                    logger.info(f"Structure analysis completed: {len(structure_analysis['identified_metrics'])} metrics identified")
+                ok, errors = validate_structure_analysis(structure_analysis)
+                if ok:
+                    logger.info(f"Structure analysis completed: {len(structure_analysis.get('identified_metrics', []))} metrics identified")
                     return structure_analysis
                 else:
-                    logger.error("Structure analysis missing required fields")
+                    logger.error(f"Structure analysis validation failed: {errors}")
                     return None
                     
             except json.JSONDecodeError as e:
@@ -441,14 +448,16 @@ class QueryBasedExtraction:
 
             from config import get_config
             cfg = get_config()
-            response = self.openai_client.chat.completions.create(
-                model=getattr(cfg.extraction, 'query_generation_model', 'gpt-5'),
+            params = choose_model('query_generation')
+            result_text, meta = call_chat_completion(
+                self.openai_client,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.1,
-                max_completion_tokens=getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 2500)
+                model=params['model'],
+                max_tokens=params['max_tokens'],
+                reasoning=params.get('reasoning'),
+                text=params.get('text'),
+                enforce_json=True,
             )
-
-            result_text = response.choices[0].message.content.strip()
             
             try:
                 # Clean response
@@ -466,12 +475,14 @@ class QueryBasedExtraction:
                     return extraction_queries
                 else:
                     logger.error("Query generation did not return a list")
-                    return None
+                    # Deterministic fallback
+                    return self._fallback_query_generation(structure_analysis)
                     
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse extraction queries JSON: {e}")
                 logger.debug(f"Raw response: {result_text}")
-                return None
+                # Deterministic fallback
+                return self._fallback_query_generation(structure_analysis)
 
         except Exception as e:
             logger.error(f"Error generating extraction queries: {e}")

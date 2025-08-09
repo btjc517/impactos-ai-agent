@@ -153,7 +153,7 @@ class TestRunner:
         config_snapshot = {
             'similarity_threshold': self.config.vector_search.min_similarity_threshold,
             'max_results_for_gpt': self.config.query_processing.max_results_for_gpt,
-            'gpt_max_tokens': self.config.query_processing.gpt4_max_tokens,
+            'gpt_max_tokens': getattr(self.config.query_processing, 'answer_max_tokens', getattr(self.config.query_processing, 'gpt4_max_tokens', 2000)),
             'environment': environment
         }
         
@@ -271,14 +271,14 @@ class TestRunner:
                 output_tokens = len(answer) // 4
                 
                 self.metrics_collector.record_gpt_call(
-                    model=self.config.query_processing.gpt4_model,
+                    model=getattr(self.config.query_processing, 'answer_model', getattr(self.config.query_processing, 'gpt4_model', 'gpt-5-mini')),
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
-                    temperature=self.config.query_processing.gpt4_temperature,
-                    max_completion_tokens=self.config.query_processing.gpt4_max_tokens,
+                    # Temperature unused for GPT-5; keep for legacy-only configs (ignored by client)
+                    max_completion_tokens=getattr(self.config.query_processing, 'answer_max_tokens', getattr(self.config.query_processing, 'gpt4_max_tokens', 2000)),
                     response_time=gpt_time,
                     response_length=len(answer),
-                    truncated=len(answer) > (self.config.query_processing.gpt4_max_tokens * 3)  # Rough estimate
+                    truncated=len(answer) > (getattr(self.config.query_processing, 'answer_max_tokens', getattr(self.config.query_processing, 'gpt4_max_tokens', 2000)) * 3)  # Rough estimate
                 )
             else:
                 answer = self.query_system._generate_fallback_answer(query, final_results)

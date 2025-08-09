@@ -375,7 +375,7 @@ class MetricsCollector:
             # Configuration values
             self.system_metrics['similarity_threshold'] = config.vector_search.min_similarity_threshold
             self.system_metrics['max_results_for_gpt'] = config.query_processing.max_results_for_gpt
-            self.system_metrics['gpt_max_tokens'] = config.query_processing.gpt4_max_tokens
+            self.system_metrics['gpt_max_tokens'] = getattr(config.query_processing, 'answer_max_tokens', getattr(config.query_processing, 'gpt4_max_tokens', 2000))
             
         except Exception as e:
             logger.warning(f"Error collecting system metrics: {e}")

@@ -2,7 +2,7 @@
 Configuration Management for ImpactOS AI Layer MVP.
 
 This module provides centralized configuration management to replace hardcoded 
-values that limit accuracy and scalability. All critical thresholds, limits, 
+values, models, and parameters that limit accuracy and scalability. All critical thresholds, limits, 
 and settings should be configurable here.
 """
 
@@ -51,10 +51,12 @@ class QueryProcessingConfig:
     descriptive_result_limit: int = 100  # Increased from 50  
     analytical_result_limit: int = 75   # Increased from 30
     
-    # GPT Processing limits
-    gpt4_max_tokens: int = 2000  # Increased from 1000 for comprehensive answers
-    gpt4_temperature: float = 0.1
-    gpt4_model: str = "gpt-5-mini"
+    # LLM answer synthesis defaults (neutral names; old gpt4_* accepted via aliases)
+    answer_max_tokens: int = 2000
+    # Temperature removed for GPT-5-only usage; retained for legacy parsing only
+    # answer_temperature is deprecated
+    answer_temperature: Optional[float] = None
+    answer_model: str = "gpt-5-mini"
     
     # Result filtering
     enable_intelligent_filtering: bool = True
@@ -74,10 +76,10 @@ class QueryProcessingConfig:
 class ExtractionConfig:
     """Configuration for data extraction processes."""
     
-    # GPT-5 extraction limits
-    gpt4_max_tokens_extraction: int = 4000  # For complex extractions
-    gpt4_max_tokens_analysis: int = 3000    # For structure analysis
-    gpt4_max_tokens_verification: int = 2500 # For verification
+    # Extraction token budgets (neutral names; old gpt4_* accepted via aliases)
+    extraction_max_tokens: int = 4000       # For complex extractions
+    structure_analysis_max_tokens: int = 3000
+    verification_max_tokens: int = 2500
     
     # Ingestion models (run infrequently)
     structure_analysis_model: str = "gpt-5"
@@ -135,7 +137,57 @@ class AnalysisConfig:
     use_llm_for_intent: bool = False
     llm_intent_model: str = "gpt-5-nano"
     llm_intent_temperature: float = 0.0
-    llm_intent_max_tokens: int = 300
+    # Default tightened to 150 as per GPT-5 intent budget
+    llm_intent_max_tokens: int = 150
+
+
+@dataclass
+class LLMConfig:
+    """Configuration for LLM behavior, escalation, and formatting.
+
+    Added in a backward-compatible way – existing code paths remain unchanged if
+    these fields are not referenced.
+    """
+    # Reasoning and verbosity controls per task
+    reasoning_effort: Dict[str, str] = None  # intent/answer/extraction
+    verbosity: Dict[str, str] = None         # intent/answer/extraction
+
+    # JSON enforcement flags and schemas (opt-in). Defaults safe for extraction
+    json_enforce_intent: bool = False
+    json_enforce_extraction: bool = True
+    json_schema_intent: Optional[str] = None
+    json_schema_extraction: Optional[str] = None
+
+    # Dynamic escalation controls
+    escalation_enabled: bool = True
+    escalation_limits: Dict[str, Any] = None  # {max_retries, p95_latency_ms}
+
+    def __post_init__(self):
+        if self.reasoning_effort is None:
+            self.reasoning_effort = {
+                'intent': 'minimal',
+                'answer': 'medium',
+                'extraction': 'high'
+            }
+        if self.verbosity is None:
+            self.verbosity = {
+                'intent': 'low',
+                'answer': 'medium',
+                'extraction': 'low'
+            }
+        if self.escalation_limits is None:
+            self.escalation_limits = {
+                'max_retries': 2,
+                'p95_latency_ms': 6000
+            }
+
+
+@dataclass
+class QAConfig:
+    """Quality and validation thresholds for Q&A outputs."""
+    citation_min_count: int = 3
+    source_agreement_tolerance: float = 10.0  # percent
+    min_context_items: int = 3
     
     def __post_init__(self):
         if self.category_keywords is None:
@@ -187,6 +239,8 @@ class SystemConfig:
     extraction: ExtractionConfig
     scalability: ScalabilityConfig
     analysis: AnalysisConfig
+    llm: LLMConfig
+    qa: QAConfig
     
     # Environment settings
     environment: str = "development"  # development, staging, production
@@ -198,6 +252,9 @@ class SystemConfig:
         self.extraction = ExtractionConfig()
         self.scalability = ScalabilityConfig()
         self.analysis = AnalysisConfig()
+        # New sections (backward-compatible)
+        self.llm = LLMConfig()
+        self.qa = QAConfig()
 
 
 class ConfigManager:
@@ -226,10 +283,29 @@ class ConfigManager:
     
     def _update_config_from_dict(self, config_dict: Dict[str, Any]):
         """Update configuration from dictionary."""
+        # Backward-compatibility mapping for old key names
+        legacy_key_map = {
+            'query_processing': {
+                'gpt4_model': 'answer_model',
+                'gpt4_temperature': 'answer_temperature',  # deprecated
+                'gpt4_max_tokens': 'answer_max_tokens',
+            },
+            'extraction': {
+                'gpt4_max_tokens_extraction': 'extraction_max_tokens',
+                'gpt4_max_tokens_analysis': 'structure_analysis_max_tokens',
+                'gpt4_max_tokens_verification': 'verification_max_tokens',
+            },
+        }
         for section_name, section_config in config_dict.items():
             if hasattr(self.config, section_name):
                 section = getattr(self.config, section_name)
-                for key, value in section_config.items():
+                # Translate legacy keys first
+                translated = dict(section_config)
+                if section_name in legacy_key_map:
+                    for old_key, new_key in legacy_key_map[section_name].items():
+                        if old_key in section_config and hasattr(section, new_key):
+                            translated[new_key] = section_config[old_key]
+                for key, value in translated.items():
                     if hasattr(section, key):
                         setattr(section, key, value)
     
@@ -241,7 +317,7 @@ class ConfigManager:
         if environment == 'production':
             # Production optimizations
             self.config.query_processing.max_results_for_gpt = 30
-            self.config.query_processing.gpt4_max_tokens = 1500
+            self.config.query_processing.answer_max_tokens = 1500
             self.config.vector_search.batch_size = 200
             self.config.scalability.max_memory_usage_mb = 4096
             self.config.debug_logging = False
@@ -249,17 +325,20 @@ class ConfigManager:
         elif environment == 'development':
             # Development settings for accuracy over performance
             self.config.query_processing.max_results_for_gpt = 25
-            self.config.query_processing.gpt4_max_tokens = 2000
+            self.config.query_processing.answer_max_tokens = 2000
             self.config.debug_logging = True
             
         # Apply environment variable overrides
         env_overrides = {
             'IMPACTOS_SIMILARITY_THRESHOLD': ('vector_search', 'min_similarity_threshold', float),
-            'IMPACTOS_MAX_TOKENS': ('query_processing', 'gpt4_max_tokens', int),
+            'IMPACTOS_MAX_TOKENS': ('query_processing', 'answer_max_tokens', int),
             'IMPACTOS_MAX_RESULTS': ('query_processing', 'max_results_for_gpt', int),
             'IMPACTOS_BATCH_SIZE': ('vector_search', 'batch_size', int),
             'IMPACTOS_USE_LLM_INTENT': ('analysis', 'use_llm_for_intent', lambda v: str(v).lower() in ('1','true','yes')),
-            'IMPACTOS_INTENT_MODEL': ('analysis', 'llm_intent_model', str)
+            'IMPACTOS_INTENT_MODEL': ('analysis', 'llm_intent_model', str),
+            # New flags (optional)
+            'IMPACTOS_ESCALATION_ENABLED': ('llm', 'escalation_enabled', lambda v: str(v).lower() in ('1','true','yes')),
+            'IMPACTOS_P95_LATENCY_MS': ('llm', 'escalation_limits', lambda v: {'p95_latency_ms': int(v), 'max_retries': self.config.llm.escalation_limits.get('max_retries', 2)}),
         }
         
         for env_var, (section, key, type_func) in env_overrides.items():
@@ -280,7 +359,9 @@ class ConfigManager:
             'query_processing': asdict(self.config.query_processing),
             'extraction': asdict(self.config.extraction),  
             'scalability': asdict(self.config.scalability),
-            'analysis': asdict(self.config.analysis)
+            'analysis': asdict(self.config.analysis),
+            'llm': asdict(self.config.llm),
+            'qa': asdict(self.config.qa)
         }
         
         try:
@@ -319,7 +400,7 @@ class ConfigManager:
             issues.append("Similarity threshold too high (> 0.9)")
             
         # Check token limits
-        if self.config.query_processing.gpt4_max_tokens > 4000:
+        if self.config.query_processing.answer_max_tokens > 4000:
             issues.append("GPT-5 max tokens exceeds recommended limit (4000)")
             
         # Check memory limits
