@@ -285,11 +285,11 @@ class QuerySystem:
                 return not (cats or aggs)
             if getattr(self.config.llm, 'escalation_enabled', True) and _needs_escalation(data):
                 # escalate to mini
-                    content2, _ = call_chat_completion(
+                content2, _ = call_chat_completion(
                     self.openai_client,
                     messages=[{"role": "user", "content": prompt}],
-                        model='gpt-5-mini',
-                        max_tokens=p['max_tokens'],
+                    model='gpt-5-mini',
+                    max_tokens=p['max_tokens'],
                     reasoning={'effort': 'low'},
                     text=p.get('text'),
                     enforce_json=True,
