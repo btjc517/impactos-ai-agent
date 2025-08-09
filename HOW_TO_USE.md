@@ -63,3 +63,14 @@ cd src/testing && python test_runner.py
 # Quick validation
 python test_runner.py --quick
 ``` 
+
+source /Users/benjamincheesebrough/Desktop/impactos-ai-agent/impactos-env-new/bin/activate
+PYTHONPATH=src python3 src/testing/llm_eval.py --suite all \
+  --models gpt-5-mini,gpt-4o-mini \
+  --max-output-tokens 256 \
+  --reasoning minimal \
+  --verbosity low \
+  --enforce-json auto \
+  --concurrency 3
+
+./run.sh main metrics --file TakingCare_Payroll_Synthetic_Data.xlsx --json

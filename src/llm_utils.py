@@ -78,45 +78,205 @@ def call_chat_completion(client, messages: List[Dict[str, str]], *,
     Returns (content, meta) where meta has: model, latency_ms, usage, error.
     """
     start = time.time()
-    usage = None
+    # Log request parameters (model and key flags) before making the call
     try:
-        kwargs: Dict[str, Any] = {
+        param_summary = {
             'model': model,
-            'messages': messages,
-            'max_completion_tokens': int(max_tokens),
+            'max_tokens': int(max_tokens),
+            'enforce_json': bool(enforce_json),
+            'reasoning_effort': (reasoning or {}).get('effort'),
+            'text_verbosity': (text or {}).get('verbosity'),
+            'messages_count': len(messages) if isinstance(messages, list) else 1,
         }
-        # Pass GPT-5 extra params if supported
-        if reasoning:
-            kwargs['reasoning'] = reasoning
-        if text:
-            kwargs['text'] = text
-        if enforce_json:
-            # Use response_format for strict JSON when supported
-            kwargs['response_format'] = {'type': 'json_object'}
-
-        resp = client.chat.completions.create(**kwargs)
-        latency_ms = int((time.time() - start) * 1000)
+        logger.info(f"LLM call start | params={param_summary}")
+    except Exception:
+        # Never let logging break the call path
+        pass
+    usage = None
+    # Prefer Responses API for GPT-5 features (verbosity/reasoning/CFG) per cookbook
+    # https://cookbook.openai.com/examples/gpt-5/gpt-5_new_params_and_tools
+    if model.startswith('gpt-5'):
         try:
+            # Prefer string input for simple prompts; list-of-messages when multi-turn
+            if isinstance(messages, list) and len(messages) == 1 and isinstance(messages[0], dict) and messages[0].get('role'):
+                input_payload: Any = messages[0].get('content', '')
+            else:
+                input_payload = messages
+
+            # Compose text param and enforce JSON if requested
+            text_param: Optional[Dict[str, Any]] = dict(text) if isinstance(text, dict) else {}
+            if enforce_json:
+                # Per cookbook, use text.format to hint JSON object output
+                fmt = text_param.get('format', {}) if text_param else {}
+                fmt['type'] = 'json_object'
+                text_param = text_param or {}
+                text_param['format'] = fmt
+
+            kwargs_resp: Dict[str, Any] = {
+                'model': model,
+                'input': input_payload,
+                'max_output_tokens': int(max_tokens),
+            }
+            if reasoning:
+                kwargs_resp['reasoning'] = reasoning
+            if text_param:
+                kwargs_resp['text'] = text_param
+            resp = client.responses.create(**kwargs_resp)
+            latency_ms = int((time.time() - start) * 1000)
+            # Extract concatenated text from responses output
+            output_text = ""
+            try:
+                items = getattr(resp, 'output', []) or []
+                for item in items:
+                    contents = getattr(item, 'content', None) or []
+                    for content in contents:
+                        # content.text may be an object with .value or a dict
+                        text_obj = getattr(content, 'text', None)
+                        if text_obj is None and isinstance(content, dict):
+                            text_obj = content.get('text')
+                        if text_obj is not None:
+                            val = getattr(text_obj, 'value', None)
+                            if val is None and isinstance(text_obj, dict):
+                                val = text_obj.get('value')
+                            if val is None and isinstance(text_obj, str):
+                                val = text_obj
+                            if val:
+                                output_text += val
+            except Exception:
+                pass
+            if not output_text:
+                # Fallback to standard fields if present
+                output_text = getattr(resp, 'output_text', '') or ''
+                if not output_text:
+                    # Extreme fallback: try choices API-shape if any
+                    try:
+                        output_text = resp.choices[0].message.content.strip()
+                    except Exception:
+                        output_text = ''
             usage = getattr(resp, 'usage', None)
-        except Exception:
-            usage = None
-        content = resp.choices[0].message.content.strip()
-        logger.info(f"LLM call ok | model={model} tokens={max_tokens} latency_ms={latency_ms}")
-        return content, {
-            'model': model,
-            'latency_ms': latency_ms,
-            'usage': usage,
-            'error': None,
-        }
-    except Exception as e:
-        latency_ms = int((time.time() - start) * 1000)
-        logger.warning(f"LLM call failed | model={model} err={e} latency_ms={latency_ms}")
-        return "", {
-            'model': model,
-            'latency_ms': latency_ms,
-            'usage': usage,
-            'error': str(e),
-        }
+            if not output_text:
+                # Fallback to Chat if Responses returned no text
+                try:
+                    chat_kwargs = {
+                        'model': model,
+                        'messages': [{"role": "user", "content": input_payload if isinstance(input_payload, str) else messages}],
+                        'max_completion_tokens': int(max_tokens),
+                    }
+                    if enforce_json:
+                        chat_kwargs['response_format'] = {'type': 'json_object'}
+                    if reasoning:
+                        chat_kwargs['reasoning'] = reasoning
+                    if text:
+                        chat_kwargs['text'] = text
+                    chat_resp = client.chat.completions.create(**chat_kwargs)
+                    content = chat_resp.choices[0].message.content.strip()
+                    if content:
+                        logger.info(f"LLM call ok (chat fallback) | model={model} tokens={max_tokens} latency_ms={latency_ms}")
+                        return content, {
+                            'model': model,
+                            'latency_ms': latency_ms,
+                            'usage': usage,
+                            'error': None,
+                        }
+                except Exception as _:
+                    pass
+            logger.info(f"LLM call ok (responses) | model={model} tokens={max_tokens} latency_ms={latency_ms}")
+            return (output_text or '').strip(), {
+                'model': model,
+                'latency_ms': latency_ms,
+                'usage': usage,
+                'error': None,
+            }
+        except Exception as e:
+            logger.warning(f"Responses API failed; falling back to chat | model={model} err={e}")
+
+    # Build base kwargs for Chat Completions
+    kwargs: Dict[str, Any] = {
+        'model': model,
+        'messages': messages,
+        'max_completion_tokens': int(max_tokens),
+    }
+    if reasoning:
+        kwargs['reasoning'] = reasoning
+    if text:
+        kwargs['text'] = text
+    if enforce_json:
+        kwargs['response_format'] = {'type': 'json_object'}
+
+    def _try_call(call_kwargs: Dict[str, Any]) -> Tuple[str, Dict[str, Any], Optional[Exception]]:
+        try:
+            resp = client.chat.completions.create(**call_kwargs)
+            latency_ms_local = int((time.time() - start) * 1000)
+            try:
+                usage_local = getattr(resp, 'usage', None)
+            except Exception:
+                usage_local = None
+            content_local = resp.choices[0].message.content.strip()
+            return content_local, {
+                'model': model,
+                'latency_ms': latency_ms_local,
+                'usage': usage_local,
+                'error': None,
+            }, None
+        except Exception as ex:
+            return "", {}, ex
+
+    # If JSON is required, enforce JSON mode for Chat as well
+    if enforce_json:
+        kwargs['response_format'] = {'type': 'json_object'}
+
+    # First try with full kwargs
+    content, meta, err = _try_call(kwargs)
+    if err is None:
+        logger.info(f"LLM call ok | model={model} tokens={max_tokens} latency_ms={meta['latency_ms']}")
+        return content, meta
+
+    # Retry logic: strip unsupported kwargs progressively
+    err_msg = str(err)
+    logger.warning(f"LLM call failed | model={model} err={err_msg}")
+
+    # 1) Remove reasoning/text if unsupported
+    if 'reasoning' in kwargs or 'text' in kwargs:
+        kwargs.pop('reasoning', None)
+        kwargs.pop('text', None)
+        content, meta, err2 = _try_call(kwargs)
+        if err2 is None:
+            logger.info(f"LLM call ok (no reasoning/text) | model={model} tokens={max_tokens} latency_ms={meta['latency_ms']}")
+            return content, meta
+        err_msg = str(err2)
+        logger.warning(f"LLM retry failed (no reasoning/text) | model={model} err={err_msg}")
+
+    # 2) Fallback from max_completion_tokens to max_tokens if needed
+    if 'max_completion_tokens' in kwargs:
+        kwargs_fallback = dict(kwargs)
+        val = kwargs_fallback.pop('max_completion_tokens', None)
+        if val is not None:
+            kwargs_fallback['max_tokens'] = val
+        content, meta, err3 = _try_call(kwargs_fallback)
+        if err3 is None:
+            logger.info(f"LLM call ok (max_tokens fallback) | model={model} tokens={max_tokens} latency_ms={meta['latency_ms']}")
+            return content, meta
+        err_msg = str(err3)
+        logger.warning(f"LLM retry failed (max_tokens fallback) | model={model} err={err_msg}")
+        kwargs = kwargs_fallback
+
+    # 3) Drop response_format if unsupported
+    if 'response_format' in kwargs:
+        kwargs.pop('response_format', None)
+        content, meta, err4 = _try_call(kwargs)
+        if err4 is None:
+            logger.info(f"LLM call ok (no response_format) | model={model} tokens={max_tokens} latency_ms={meta['latency_ms']}")
+            return content, meta
+        err_msg = str(err4)
+        logger.warning(f"LLM retry failed (no response_format) | model={model} err={err_msg}")
+
+    latency_ms = int((time.time() - start) * 1000)
+    return "", {
+        'model': model,
+        'latency_ms': latency_ms,
+        'usage': usage,
+        'error': err_msg,
+    }
 
 
 def extract_citation_ids(text: str) -> List[int]:

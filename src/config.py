@@ -77,9 +77,12 @@ class ExtractionConfig:
     """Configuration for data extraction processes."""
     
     # Extraction token budgets (neutral names; old gpt4_* accepted via aliases)
-    extraction_max_tokens: int = 4000       # For complex extractions
-    structure_analysis_max_tokens: int = 3000
-    verification_max_tokens: int = 2500
+    extraction_max_tokens: int = 40000       # For complex extractions
+    # extraction_max_tokens: int = 4000       # For complex extractions
+    structure_analysis_max_tokens: int = 30000
+    # structure_analysis_max_tokens: int = 3000
+    verification_max_tokens: int = 25000
+    # verification_max_tokens: int = 2500
     
     # Ingestion models (run infrequently)
     structure_analysis_model: str = "gpt-5"
@@ -161,13 +164,13 @@ class LLMConfig:
     # Dynamic escalation controls
     escalation_enabled: bool = True
     escalation_limits: Dict[str, Any] = None  # {max_retries, p95_latency_ms}
-
+    
     def __post_init__(self):
         if self.reasoning_effort is None:
             self.reasoning_effort = {
                 'intent': 'minimal',
                 'answer': 'medium',
-                'extraction': 'high'
+                'extraction': 'medium'
             }
         if self.verbosity is None:
             self.verbosity = {
@@ -188,46 +191,6 @@ class QAConfig:
     citation_min_count: int = 3
     source_agreement_tolerance: float = 10.0  # percent
     min_context_items: int = 3
-    
-    def __post_init__(self):
-        if self.category_keywords is None:
-            self.category_keywords = {
-                'volunteering': ['volunteer', 'volunteering', 'community service', 'civic engagement'],
-                'donations': ['donation', 'charity', 'giving', 'contributed', 'charitable'],
-                'carbon': ['carbon', 'co2', 'emission', 'environmental', 'scope 1', 'scope 2', 'scope 3'],
-                'procurement': ['procurement', 'supplier', 'local spend', 'supply chain'],
-                'training': ['training', 'learning', 'development', 'education', 'skill'],
-                'diversity': ['diversity', 'inclusion', 'gender', 'ethnicity', 'equity'],
-                'employee': ['employee', 'staff', 'workforce', 'personnel', 'assistance']
-            }
-        if self.aggregation_patterns is None:
-            self.aggregation_patterns = {
-                'sum': ['total', 'sum', 'amount', 'how much', 'all', 'overall'],
-                'average': ['average', 'mean', 'typical'],
-                'count': ['count', 'how many', 'number of', 'quantity'],
-                'max': ['maximum', 'highest', 'most', 'largest'],
-                'min': ['minimum', 'lowest', 'least', 'smallest']
-            }
-        if self.time_patterns is None:
-            self.time_patterns = ['last year', 'this year', 'annually', 'monthly', 'quarterly', '2024', '2023']
-        if self.category_descriptions is None:
-            self.category_descriptions = {
-                'volunteering': 'questions about volunteering, volunteer hours, community service time',
-                'donations': 'questions about donations, charitable giving, matched giving amounts',
-                'carbon': 'questions about carbon emissions, CO2, environmental impact across scopes',
-                'procurement': 'questions about procurement spend, suppliers, local supply chain',
-                'training': 'questions about employee training, learning, development hours or courses',
-                'diversity': 'questions about diversity, inclusion, representation, equality metrics',
-                'employee': 'questions about employees, workforce assistance, EAP usage, staff metrics'
-            }
-        if self.aggregation_descriptions is None:
-            self.aggregation_descriptions = {
-                'sum': 'asks for totals, sums, overall amount across records',
-                'average': 'asks for average, mean typical value',
-                'count': 'asks how many, number of items, count of records',
-                'max': 'asks for maximum, highest, most, largest value',
-                'min': 'asks for minimum, lowest, least, smallest value'
-            }
 
 
 @dataclass  

@@ -31,9 +31,9 @@
     "aggregation_ctx_max_vector": 5
   },
   "extraction": {
-    "extraction_max_tokens": 4000,
-    "structure_analysis_max_tokens": 3000,
-    "verification_max_tokens": 2500,
+    "extraction_max_tokens": 40000,
+    "structure_analysis_max_tokens": 30000,
+    "verification_max_tokens": 25000,
     "confidence_threshold": 0.7,
     "verification_tolerance": 0.02,
     "max_rows_per_batch": 1000,

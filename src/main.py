@@ -165,6 +165,62 @@ class ImpactOSCLI:
         except Exception as e:
             logger.error(f"Error listing data: {e}")
     
+    def list_metrics_for_file(self, filename: str, as_json: bool = False) -> None:
+        """List all metrics stored for a given source filename.
+
+        Args:
+            filename: Exact filename of the ingested source (e.g., 'TakingCare_Payroll_Synthetic_Data.xlsx')
+            as_json: When True, print results as a JSON array; otherwise, pretty-print rows
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT 
+                        im.id,
+                        im.metric_name,
+                        im.metric_value,
+                        im.metric_unit,
+                        im.metric_category,
+                        im.extraction_confidence,
+                        im.verification_status,
+                        im.source_sheet_name,
+                        im.source_column_name,
+                        im.source_cell_reference,
+                        s.processed_timestamp
+                    FROM impact_metrics im
+                    JOIN sources s ON im.source_id = s.id
+                    WHERE s.filename = ?
+                    ORDER BY im.created_at DESC
+                    """,
+                    (filename,),
+                )
+                rows = [dict(r) for r in cursor.fetchall()]
+
+            if as_json:
+                import json as _json
+                print(_json.dumps(rows, indent=2, default=str))
+                return
+
+            if not rows:
+                print(f"No metrics found for file '{filename}'.")
+                return
+
+            print(f"\n=== Metrics for {filename} ===")
+            for r in rows:
+                print(
+                    f"- #{r['id']}: {r['metric_name']} = {r['metric_value']} {r.get('metric_unit') or ''}"
+                    f" | category: {r.get('metric_category') or 'n/a'}"
+                    f" | confidence: {r.get('extraction_confidence') if r.get('extraction_confidence') is not None else 'n/a'}"
+                    f" | verification: {r.get('verification_status') or 'n/a'}"
+                    f" | sheet: {r.get('source_sheet_name') or 'n/a'}"
+                    f" | cell: {r.get('source_cell_reference') or r.get('source_column_name') or 'n/a'}"
+                )
+        except Exception as e:
+            logger.error(f"Error listing metrics for file '{filename}': {e}")
+
     def verify_data(self, target: str):
         """Verify data accuracy."""
         try:
@@ -348,6 +404,22 @@ Examples:
         help='List available data files and sources'
     )
 
+    # Metrics command
+    metrics_parser = subparsers.add_parser(
+        'metrics',
+        help='List all stored metrics for a given source filename'
+    )
+    metrics_parser.add_argument(
+        '--file', '-f',
+        required=True,
+        help='Exact filename of ingested source (e.g., TakingCare_Payroll_Synthetic_Data.xlsx)'
+    )
+    metrics_parser.add_argument(
+        '--json',
+        action='store_true',
+        help='Output results as JSON'
+    )
+
     # Add frameworks command
     frameworks_parser = subparsers.add_parser('frameworks', 
                                               help='Generate framework mapping report')
@@ -408,6 +480,9 @@ def main():
             
         elif args.command == 'list':
             cli.list_available_data()
+        
+        elif args.command == 'metrics':
+            cli.list_metrics_for_file(args.file, as_json=bool(getattr(args, 'json', False)))
             
         elif args.command == 'frameworks':
             cli.show_framework_report(args)

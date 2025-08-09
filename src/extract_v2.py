@@ -101,8 +101,10 @@ class QueryBasedExtraction:
             # Phase 1: Comprehensive Structure Analysis
             structure_analysis = self._analyze_structure(df, file_path)
             if not structure_analysis:
-                logger.error("Structure analysis failed")
-                return []
+                logger.error("Structure analysis failed; using heuristic fallback")
+                structure_analysis = self._fallback_structure_analysis(df)
+                if not structure_analysis:
+                    return []
             
             # Phase 2: Generate Extraction Queries
             extraction_queries = self._generate_extraction_queries(structure_analysis)
@@ -174,8 +176,6 @@ class QueryBasedExtraction:
 
             DETAILED STRUCTURE:
             {structure_info}
-            // print the structure_info
-            print(structure_info)
 
             ANALYSIS REQUIREMENTS:
             Analyze this data structure and return a JSON object with:
@@ -242,27 +242,69 @@ class QueryBasedExtraction:
             from config import get_config
             cfg = get_config()
             params = choose_model('structure_analysis')
+            # Strong JSON-only instruction; model must return a single JSON object
+            prompt += "\nReturn ONLY a valid JSON object. Do not include any prose or code fences."
+            # Log GPT call parameters for ingestion (structure analysis)
+            try:
+                logger.info(
+                    "LLM call start | context=ingestion_structure_analysis params=%s",
+                    {
+                        'model': params.get('model'),
+                        'max_tokens': params.get('max_tokens'),
+                        'enforce_json': True,
+                        'reasoning_effort': (params.get('reasoning') or {}).get('effort'),
+                        'text_verbosity': (params.get('text') or {}).get('verbosity'),
+                        'messages_count': 1,
+                    }
+                )
+            except Exception:
+                pass
             result_text, meta = call_chat_completion(
                 self.openai_client,
                 messages=[{"role": "user", "content": prompt}],
                 model=params['model'],
                 max_tokens=params['max_tokens'],
                 reasoning=params.get('reasoning'),
-                text=params.get('text'),
+                text={'verbosity': 'low', 'format': {'type': 'json_object'}},
                 enforce_json=True,
             )
+            # If model returned empty content (reasoning-only), fallback to a non-reasoning chat model in JSON mode
+            if not (result_text and result_text.strip()):
+                try:
+                    chat = self.openai_client.chat.completions.create(
+                        model='gpt-4o-mini',
+                        messages=[{"role": "user", "content": prompt}],
+                        response_format={"type": "json_object"},
+                        max_completion_tokens=params['max_tokens'],
+                    )
+                    result_text = (chat.choices[0].message.content or '').strip()
+                except Exception as e:
+                    logger.error(f"Fallback model failed for structure analysis: {e}")
+                    return None
             
             # Parse and validate the structure analysis
             try:
                 # Clean response
-                cleaned_response = result_text.strip()
+                cleaned_response = (result_text or '').strip()
                 if cleaned_response.startswith('```json'):
-                    cleaned_response = cleaned_response.split('```json')[1]
+                    cleaned_response = cleaned_response.split('```json', 1)[1]
                 if cleaned_response.endswith('```'):
-                    cleaned_response = cleaned_response.split('```')[0]
+                    cleaned_response = cleaned_response.rsplit('```', 1)[0]
                 cleaned_response = cleaned_response.strip()
-                
-                structure_analysis = json.loads(cleaned_response)
+
+                # Try direct parse; if empty or fails, extract first JSON object from raw text
+                structure_analysis = None
+                if cleaned_response:
+                    try:
+                        structure_analysis = json.loads(cleaned_response)
+                    except Exception:
+                        structure_analysis = None
+                if structure_analysis is None:
+                    extracted = self._extract_first_json_object(result_text or '')
+                    if extracted:
+                        structure_analysis = json.loads(extracted)
+                    else:
+                        raise json.JSONDecodeError("no JSON object found", cleaned_response, 0)
                 ok, errors = validate_structure_analysis(structure_analysis)
                 if ok:
                     logger.info(f"Structure analysis completed: {len(structure_analysis.get('identified_metrics', []))} metrics identified")
@@ -398,7 +440,7 @@ class QueryBasedExtraction:
             Based on the structure analysis, generate precise pandas queries to extract social value metrics.
 
             STRUCTURE ANALYSIS:
-            {json.dumps(structure_analysis, indent=2)}
+            {json.dumps(structure_analysis, default=str, indent=2)}
 
             Generate extraction queries in this exact JSON format:
             [
@@ -449,13 +491,30 @@ class QueryBasedExtraction:
             from config import get_config
             cfg = get_config()
             params = choose_model('query_generation')
+            # Strong JSON array instruction
+            prompt += "\nReturn ONLY a valid JSON array. Do not include any prose or code fences."
+            # Log GPT call parameters for ingestion (query generation)
+            try:
+                logger.info(
+                    "LLM call start | context=ingestion_query_generation params=%s",
+                    {
+                        'model': params.get('model'),
+                        'max_tokens': params.get('max_tokens'),
+                        'enforce_json': True,
+                        'reasoning_effort': (params.get('reasoning') or {}).get('effort'),
+                        'text_verbosity': 'low',
+                        'messages_count': 1,
+                    }
+                )
+            except Exception:
+                pass
             result_text, meta = call_chat_completion(
                 self.openai_client,
                 messages=[{"role": "user", "content": prompt}],
                 model=params['model'],
                 max_tokens=params['max_tokens'],
                 reasoning=params.get('reasoning'),
-                text=params.get('text'),
+                text={'verbosity': 'low', 'format': {'type': 'json_object'}},
                 enforce_json=True,
             )
             

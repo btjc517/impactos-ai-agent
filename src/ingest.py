@@ -121,17 +121,23 @@ class DataIngestion:
             if not self._validate_file(file_path):
                 return False
             
-            # 2. Register source in database
+            # 2. Capture filename and any existing sources for de-duplication
+            filename = Path(file_path).name
+            existing_source_ids = self._get_existing_source_ids_by_filename(filename)
+
+            # 3. Register NEW source in database (marked processing)
             source_id = self._register_source(file_path)
             if not source_id:
                 return False
             
-            # 3. Load and parse file
+            # 4. Load and parse file
             data = self._load_file(file_path)
             if data is None:
+                # Roll back the newly created source if we couldn't load data
+                self._safe_delete_source(source_id)
                 return False
             
-            # 4. Extract metrics using chosen method
+            # 5. Extract metrics using chosen method
             if use_query_based:
                 logger.info("Using advanced query-based extraction for zero mistakes")
                 from extract_v2 import QueryBasedExtraction
@@ -141,11 +147,18 @@ class DataIngestion:
                 logger.info("Using legacy text-based extraction")
                 metrics = self._extract_metrics(data, source_id)
             
-            # 5. Store metrics and create embeddings
+            # 6. Store metrics and create embeddings
             success = self._store_metrics(metrics, source_id)
             
-            # 6. Update source processing status
-            self._update_source_status(source_id, 'completed' if success else 'failed')
+            # 7. Update source processing status and de-duplicate
+            if success:
+                self._update_source_status(source_id, 'completed')
+                # Remove any prior sources with same filename (keep the new one)
+                self._deduplicate_sources_by_filename(filename, keep_source_id=source_id, prior_source_ids=existing_source_ids)
+            else:
+                # Mark failed and remove the newly created source to preserve previous state
+                self._update_source_status(source_id, 'failed')
+                self._safe_delete_source(source_id)
             
             extraction_method = "query-based" if use_query_based else "text-based"
             logger.info(f"Ingestion completed for {file_path} using {extraction_method} extraction")
@@ -193,6 +206,90 @@ class DataIngestion:
         except sqlite3.Error as e:
             logger.error(f"Error registering source: {e}")
             return None
+
+    def _get_existing_source_ids_by_filename(self, filename: str) -> list:
+        """Return list of existing source IDs for the given filename."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id FROM sources WHERE filename = ?
+                """, (filename,))
+                rows = cursor.fetchall()
+                return [row[0] for row in rows]
+        except Exception as e:
+            logger.warning(f"Failed to look up existing sources for {filename}: {e}")
+            return []
+
+    def _safe_delete_source(self, source_id: int) -> None:
+        """Delete a source by id with cascading cleanup; ignore errors."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("PRAGMA foreign_keys = ON")
+                except Exception:
+                    pass
+                cursor.execute("DELETE FROM sources WHERE id = ?", (source_id,))
+                conn.commit()
+                logger.info(f"Deleted source {source_id} after failed ingestion")
+        except Exception as e:
+            logger.warning(f"Failed to delete source {source_id}: {e}")
+
+    def _deduplicate_sources_by_filename(self, filename: str, keep_source_id: int, prior_source_ids: Optional[list] = None) -> None:
+        """Remove old sources with the same filename and rebuild FAISS to avoid duplicates.
+
+        Args:
+            filename: The filename used as de-duplication key.
+            keep_source_id: The newly created successful source to keep.
+            prior_source_ids: Optional list of existing source IDs captured before ingest.
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                try:
+                    cursor.execute("PRAGMA foreign_keys = ON")
+                except Exception:
+                    pass
+                # Determine candidates to delete: all with same filename except the one to keep
+                if prior_source_ids is None:
+                    cursor.execute("SELECT id FROM sources WHERE filename = ? AND id != ?", (filename, keep_source_id))
+                    to_delete = [row[0] for row in cursor.fetchall()]
+                else:
+                    to_delete = [sid for sid in prior_source_ids if sid != keep_source_id]
+
+                if not to_delete:
+                    logger.info(f"No prior sources to remove for filename {filename}")
+                else:
+                    # Clean dependent rows in a safe order for SQLite without reliable cascades
+                    # 1) Collect impact_metric ids for those sources
+                    q_marks = ",".join(["?"] * len(to_delete))
+                    cursor.execute(f"SELECT id FROM impact_metrics WHERE source_id IN ({q_marks})", tuple(to_delete))
+                    metric_rows = cursor.fetchall()
+                    metric_ids = [row[0] for row in metric_rows]
+
+                    if metric_ids:
+                        # 2) Delete framework mappings referencing those metrics
+                        q_marks_mid = ",".join(["?"] * len(metric_ids))
+                        cursor.execute(f"DELETE FROM framework_mappings WHERE impact_metric_id IN ({q_marks_mid})", tuple(metric_ids))
+                        # 3) Delete embeddings for those metrics (in case cascade is off)
+                        cursor.execute(f"DELETE FROM embeddings WHERE metric_id IN ({q_marks_mid})", tuple(metric_ids))
+                        # 4) Delete the metrics themselves (in case cascade from sources is off)
+                        cursor.execute(f"DELETE FROM impact_metrics WHERE id IN ({q_marks_mid})", tuple(metric_ids))
+
+                    # 5) Finally delete the old sources
+                    cursor.executemany("DELETE FROM sources WHERE id = ?", [(sid,) for sid in to_delete])
+                    conn.commit()
+                    logger.info(f"Removed {len(to_delete)} old source(s) for {filename}: {to_delete}")
+
+            # Rebuild FAISS index to ensure removed embeddings are purged
+            try:
+                self.vector_search.rebuild_index_from_database()
+            except Exception as e:
+                logger.warning(f"Failed to rebuild FAISS index after de-duplication: {e}")
+
+        except Exception as e:
+            logger.warning(f"Error during de-duplication for {filename}: {e}")
     
     def _load_file(self, file_path: str) -> Optional[pd.DataFrame]:
         """Load file with enhanced accuracy and bulletproof data extraction."""
@@ -211,10 +308,15 @@ class DataIngestion:
                         # Store metadata for later use in extraction
                         self.file_metadata[file_path] = metadata
                         
-                        # Convert Polars to pandas if needed for compatibility with existing code
+                        # Convert Polars to pandas only when necessary.
+                        # For query-based extraction, keep Polars and avoid optional pyarrow dependency.
                         if hasattr(df, 'to_pandas'):  # It's a Polars DataFrame
-                            df_pandas = df.to_pandas()
-                            logger.info(f"Converted Polars DataFrame to pandas for compatibility")
+                            if not (hasattr(self, 'use_query_based') and self.use_query_based):
+                                df_pandas = df.to_pandas()
+                                logger.info("Converted Polars DataFrame to pandas for compatibility")
+                            else:
+                                df_pandas = df
+                                logger.info("Keeping Polars DataFrame (query-based extraction); skipping pandas conversion")
                         else:
                             df_pandas = df
                         
@@ -389,6 +491,13 @@ class DataIngestion:
 
             from config import get_config
             cfg = get_config()
+            # Log GPT call parameters for ingestion (legacy text-based extraction)
+            try:
+                _model = getattr(cfg.extraction, 'query_generation_model', 'gpt-5')
+                _max_tokens = getattr(cfg.extraction, 'extraction_max_tokens', getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 4000))
+                logger.info(f"LLM call start | context=ingestion_legacy_extraction params={{'model': '{_model}', 'max_tokens': {_max_tokens}, 'enforce_json': False, 'reasoning_effort': None, 'text_verbosity': None, 'messages_count': 1}}")
+            except Exception:
+                pass
             response = self.openai_client.chat.completions.create(
                 model=getattr(cfg.extraction, 'query_generation_model', 'gpt-5'),
                 messages=[{"role": "user", "content": prompt}],
