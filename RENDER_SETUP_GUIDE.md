@@ -11,7 +11,7 @@ This guide walks you through setting up your ImpactOS AI system on Render with S
 1. **GitHub Repository** - Your `impactos-ai-agent` repo (✅ already have this)
 2. **Render Account** - Sign up at [render.com](https://render.com)
 3. **Supabase Account** - Sign up at [supabase.com](https://supabase.com)
-4. **OpenAI API Key** - For GPT-4 functionality
+4. **OpenAI API Key** - For GPT-5 functionality
 
 ## 🗄️ Step 1: Set Up Supabase Database
 

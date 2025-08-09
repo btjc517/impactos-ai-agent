@@ -17,7 +17,7 @@ ImpactOS AI Agent is a sophisticated Python-based system designed to handle the 
 
 ## Technologies Used
 
-- **AI & ML**: LangChain, OpenAI GPT-4, sentence-transformers, PyTorch
+- **AI & ML**: LangChain, OpenAI GPT-5, sentence-transformers, PyTorch
 - **Data Processing**: pandas, PyPDF2, openpyxl, polars
 - **Search & Storage**: FAISS, SQLite, SQLAlchemy
 - **Testing & Performance**: Custom test runners, metrics collection, performance tracking
@@ -141,7 +141,7 @@ The system uses JSON-based configuration files for flexible behavior control:
     "vector_index_path": "db/faiss_index"
   },
   "ai": {
-    "model": "gpt-4",
+    "model": "gpt-5",
     "embedding_model": "all-MiniLM-L6-v2",
     "confidence_threshold": 0.7
   },

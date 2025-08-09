@@ -21,7 +21,7 @@
     "analytical_result_limit": 75,
     "gpt4_max_tokens": 2000,
     "gpt4_temperature": 0.1,
-    "gpt4_model": "gpt-4",
+    "gpt4_model": "gpt-5-mini",
     "enable_intelligent_filtering": true,
     "duplicate_detection": true,
     "enable_result_caching": true,
@@ -73,7 +73,7 @@
     "aggregation_min_similarity": 0.30,
     "framework_mapping_min_similarity": 0.35,
     "use_llm_for_intent": true,
-    "llm_intent_model": "gpt-4o-mini",
+    "llm_intent_model": "gpt-5-nano",
     "llm_intent_temperature": 0.0,
     "llm_intent_max_tokens": 300
   }

@@ -74,7 +74,7 @@ class QueryProcessingConfig:
 class ExtractionConfig:
     """Configuration for data extraction processes."""
     
-    # GPT-4 extraction limits
+    # GPT-5 extraction limits
     gpt4_max_tokens_extraction: int = 4000  # For complex extractions
     gpt4_max_tokens_analysis: int = 3000    # For structure analysis
     gpt4_max_tokens_verification: int = 2500 # For verification
@@ -320,7 +320,7 @@ class ConfigManager:
             
         # Check token limits
         if self.config.query_processing.gpt4_max_tokens > 4000:
-            issues.append("GPT-4 max tokens exceeds recommended limit (4000)")
+            issues.append("GPT-5 max tokens exceeds recommended limit (4000)")
             
         # Check memory limits
         if self.config.scalability.max_memory_usage_mb < 512:

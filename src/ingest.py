@@ -2,7 +2,7 @@
 Data ingestion pipeline for ImpactOS AI Layer MVP Phase One.
 
 This module handles loading XLSX/CSV files, extracting social value metrics 
-using GPT-4, creating embeddings, and storing in SQLite + FAISS.
+using GPT-5, creating embeddings, and storing in SQLite + FAISS.
 """
 
 import pandas as pd
@@ -78,7 +78,7 @@ class DataIngestion:
         """Initialize OpenAI client with API key."""
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
-            logger.warning("OPENAI_API_KEY not found in environment. GPT-4 extraction disabled.")
+            logger.warning("OPENAI_API_KEY not found in environment. GPT-5 extraction disabled.")
             return None
         
         try:
@@ -270,7 +270,7 @@ class DataIngestion:
             return None
     
     def _extract_metrics(self, data: pd.DataFrame, source_id: int) -> List[Dict[str, Any]]:
-        """Extract social value metrics from data using GPT-4."""
+        """Extract social value metrics from data using GPT-5."""
         try:
             metrics = []
             
@@ -284,13 +284,13 @@ class DataIngestion:
                     return extractor.extract_metrics_v2(self.current_file_path, source_id)
             
             # FALLBACK: Original text-based approach
-            # Convert DataFrame to text for GPT-4 analysis
+            # Convert DataFrame to text for GPT-5 analysis
             data_sample = data.head(10).to_string()  # Use first 10 rows as sample
             column_info = f"Columns: {list(data.columns)}"
             
             if self.openai_client:
-                # Use GPT-4 for intelligent extraction
-                metrics = self._extract_with_gpt4(data_sample, column_info, source_id)
+                # Use GPT-5 for intelligent extraction
+                metrics = self._extract_with_gpt5(data_sample, column_info, source_id)
             else:
                 # Fallback to simple heuristic extraction
                 metrics = self._extract_with_heuristics(data, source_id)
@@ -302,8 +302,8 @@ class DataIngestion:
             logger.error(f"Error extracting metrics: {e}")
             return []
     
-    def _extract_with_gpt4(self, data_sample: str, column_info: str, source_id: int) -> List[Dict[str, Any]]:
-        """Extract metrics using GPT-4 with enhanced cell reference tracking."""
+    def _extract_with_gpt5(self, data_sample: str, column_info: str, source_id: int) -> List[Dict[str, Any]]:
+        """Extract metrics using GPT-5 with enhanced cell reference tracking."""
         try:
             # Check if we have enhanced metadata available
             enhanced_info = ""
@@ -400,7 +400,7 @@ class DataIngestion:
 
             # Parse JSON response
             try:
-                # Clean the response - sometimes GPT-4 adds markdown formatting
+                # Clean the response - sometimes GPT-5 adds markdown formatting
                 cleaned_response = result_text.strip()
                 if cleaned_response.startswith('```json'):
                     cleaned_response = cleaned_response.split('```json')[1]
@@ -408,7 +408,7 @@ class DataIngestion:
                     cleaned_response = cleaned_response.split('```')[0]
                 cleaned_response = cleaned_response.strip()
                 
-                logger.debug(f"GPT-4 raw response: {result_text[:500]}...")
+                logger.debug(f"GPT-5 raw response: {result_text[:500]}...")
                 logger.debug(f"Cleaned response: {cleaned_response[:500]}...")
                 
                 metrics = json.loads(cleaned_response)
@@ -427,22 +427,22 @@ class DataIngestion:
                         else:
                             logger.warning(f"Metric '{metric.get('metric_name')}' missing citation fields - skipped")
                     
-                    logger.info(f"GPT-4 extracted {len(validated_metrics)} metrics with citations (from {len(metrics)} total)")
+                    logger.info(f"GPT-5 extracted {len(validated_metrics)} metrics with citations (from {len(metrics)} total)")
                     return validated_metrics
                 else:
-                    logger.warning("GPT-4 returned non-list response")
+                    logger.warning("GPT-5 returned non-list response")
                     return []
             except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse GPT-4 JSON response: {e}")
+                logger.error(f"Failed to parse GPT-5 JSON response: {e}")
                 logger.error(f"Raw response: {result_text}")
                 return []
 
         except Exception as e:
-            logger.error(f"Error with GPT-4 extraction: {e}")
+            logger.error(f"Error with GPT-5 extraction: {e}")
             return []
     
     def _extract_with_heuristics(self, data: pd.DataFrame, source_id: int) -> List[Dict[str, Any]]:
-        """Fallback heuristic extraction when GPT-4 is not available."""
+        """Fallback heuristic extraction when GPT-5 is not available."""
         metrics = []
         
         try:

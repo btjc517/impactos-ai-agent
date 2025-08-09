@@ -231,7 +231,7 @@ class PerformanceTracker:
             
             if cost_change > 15:
                 recommendations.append(
-                    "💰 API costs increased by {:.1f}%. Consider reducing GPT-4 token limits or using more efficient prompts.".format(cost_change)
+                    "💰 API costs increased by {:.1f}%. Consider reducing GPT-5 token limits or using more efficient prompts.".format(cost_change)
                 )
         
         # Accuracy recommendations

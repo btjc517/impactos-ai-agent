@@ -2,8 +2,8 @@
 Advanced Query-Based Data Extraction for ImpactOS AI Layer MVP.
 
 This module implements a two-phase approach:
-1. Structure Analysis: GPT-4 analyzes complete data structure
-2. Query Generation: GPT-4 creates precise pandas queries for extraction
+1. Structure Analysis: GPT-5 analyzes complete data structure
+2. Query Generation: GPT-5 creates precise pandas queries for extraction
 
 This eliminates guesswork and achieves near 100% accuracy.
 """
@@ -51,7 +51,7 @@ class QueryBasedExtraction:
         """Initialize OpenAI client with API key."""
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
-            logger.warning("OPENAI_API_KEY not found. GPT-4 extraction disabled.")
+            logger.warning("OPENAI_API_KEY not found. GPT-5 extraction disabled.")
             return None
         
         try:
@@ -140,7 +140,7 @@ class QueryBasedExtraction:
     
     def _analyze_structure(self, df: pd.DataFrame, file_path: str) -> Optional[Dict[str, Any]]:
         """
-        Phase 1: Comprehensive structure analysis using GPT-4.
+        Phase 1: Comprehensive structure analysis using GPT-5.
         
         This analyzes the COMPLETE data structure to understand:
         - Column meanings and data types
@@ -274,7 +274,7 @@ class QueryBasedExtraction:
             return None
     
     def _prepare_structure_info(self, df: pd.DataFrame) -> str:
-        """Prepare comprehensive structure information for GPT-4."""
+        """Prepare comprehensive structure information for GPT-5."""
         try:
             info_parts = []
             
@@ -313,7 +313,7 @@ class QueryBasedExtraction:
             return f"Error: {e}"
     
     def _fallback_structure_analysis(self, df: pd.DataFrame) -> Dict[str, Any]:
-        """Fallback structure analysis when GPT-4 is not available."""
+        """Fallback structure analysis when GPT-5 is not available."""
         try:
             # Simple heuristic analysis
             numeric_columns = df.select_dtypes(include=['number']).columns.tolist()
@@ -478,7 +478,7 @@ class QueryBasedExtraction:
             return None
     
     def _fallback_query_generation(self, structure_analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Fallback query generation when GPT-4 is not available."""
+        """Fallback query generation when GPT-5 is not available."""
         try:
             queries = []
             

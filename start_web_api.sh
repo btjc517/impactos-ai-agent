@@ -88,7 +88,7 @@ fi
 # Check for required environment variables
 if [[ -z "$OPENAI_API_KEY" ]]; then
     echo "Warning: OPENAI_API_KEY environment variable not set"
-    echo "GPT-4 orchestration will be disabled"
+    echo "GPT-5 orchestration will be disabled"
     echo ""
 fi
 

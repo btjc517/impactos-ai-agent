@@ -4,7 +4,7 @@ Query and Q&A system for ImpactOS AI Layer MVP Phase One.
 This module handles natural language queries with enhanced functionality:
 1. Replacing hard top-10 limit with relevance threshold filtering
 2. Query-type specific result limits (higher for aggregations)
-3. Two-stage processing: retrieve all relevant, then filter for GPT-4
+3. Two-stage processing: retrieve all relevant, then filter for GPT-5
 4. Progressive summarization for large result sets
 
 Features focus on accuracy and completeness over artificial speed limits.
@@ -60,7 +60,7 @@ class QuerySystem:
         """Initialize OpenAI client with API key."""
         api_key = os.getenv('OPENAI_API_KEY')
         if not api_key:
-            logger.warning("OPENAI_API_KEY not found. GPT-4 orchestration disabled.")
+            logger.warning("OPENAI_API_KEY not found. GPT-5 orchestration disabled.")
             return None
         
         try:
@@ -204,12 +204,12 @@ class QuerySystem:
                 logger.info("Returning SQL-first deterministic answer (no GPT)")
                 return direct_answer
             
-            # 3. Intelligent filtering and summarization for GPT-4
+            # 3. Intelligent filtering and summarization for GPT-5
             filtered_results = self._intelligent_filter_for_gpt(results, query_analysis)
             
-            logger.info(f"Filtered to {len(filtered_results)} results for GPT-4")
+            logger.info(f"Filtered to {len(filtered_results)} results for GPT-5")
             
-            # 4. Generate cited answer using GPT-4 (if available)
+            # 4. Generate cited answer using GPT-5 (if available)
             if self.openai_client and filtered_results:
                 answer = self._generate_gpt_answer(question, filtered_results)
             else:
@@ -587,7 +587,7 @@ class QuerySystem:
         return results[:limit]
     
     def _intelligent_filter_for_gpt(self, results: List[Dict[str, Any]], analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
-        """Intelligently filter results for GPT-4 context window."""
+        """Intelligently filter results for GPT-5 context window."""
         max_results = self.config.query_processing.max_results_for_gpt
         if len(results) <= max_results:
             return results
@@ -645,7 +645,7 @@ class QuerySystem:
         return "; ".join(parts) if parts else "No specific cell reference"
     
     def _generate_gpt_answer(self, question: str, results: List[Dict[str, Any]]) -> str:
-        """Generate answer using GPT-4 with enhanced context."""
+        """Generate answer using GPT-5 with enhanced context."""
         try:
             # Prepare enhanced context from search results
             context_parts = []
@@ -788,7 +788,7 @@ class QuerySystem:
             return text
     
     def _generate_fallback_answer(self, question: str, results: List[Dict[str, Any]]) -> str:
-        """Generate comprehensive fallback answer when GPT-4 is not available."""
+        """Generate comprehensive fallback answer when GPT-5 is not available."""
         if not results:
             return (
                 "I couldn't find specific data to answer your question. "

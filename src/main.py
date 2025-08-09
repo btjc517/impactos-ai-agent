@@ -189,7 +189,7 @@ class ImpactOSCLI:
                 
                 if summary['accuracy'] < 0.8 and summary['total'] > 0:
                     print("\n⚠️  Low accuracy detected! Consider:")
-                    print("    - Improving GPT-4 extraction prompts")
+                    print("    - Improving GPT-5 extraction prompts")
                     print("    - Adding more precise citation requirements")
                     print("    - Checking data quality in source files")
                 
