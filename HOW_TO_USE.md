@@ -73,4 +73,4 @@ PYTHONPATH=src python3 src/testing/llm_eval.py --suite all \
   --enforce-json auto \
   --concurrency 3
 
-./run.sh main metrics --file TakingCare_Payroll_Synthetic_Data.xlsx --json
+./run.sh metrics --file TakingCare_Benevity_Synthetic_Data.xlsx --json

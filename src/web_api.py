@@ -9,6 +9,7 @@ import os
 import sys
 import logging
 from typing import Dict, List, Any, Optional
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -33,6 +34,7 @@ if project_root not in sys.path:
 # Local imports
 from main import ImpactOSCLI
 from query import QuerySystem, query_data
+from telemetry import telemetry, capture_logs
 from schema import DatabaseSchema
 from frameworks import get_framework_report, apply_framework_mappings
 from verify import verify_all_data, verify_metric
@@ -69,6 +71,9 @@ class QueryRequest(BaseModel):
     question: str = Field(..., description="Natural language question about the data")
     show_accuracy: bool = Field(False, description="Include verification accuracy in response")
     force_chart: Optional[bool] = Field(None, description="Force chart rendering if possible")
+    # Optional identifiers passed from the web portal
+    user_id: Optional[str] = Field(None, description="Authenticated user id from web portal auth")
+    session_id: Optional[str] = Field(None, description="Client session id for grouping queries")
 
 class QueryResponse(BaseModel):
     answer: str = Field(..., description="Answer to the question with citations")
@@ -262,10 +267,14 @@ async def query_data_endpoint(request: QueryRequest):
         
         logger.info(f"Processing web API query: {request.question}")
         
-        # Process the query using structured response (answer + optional chart)
-        from query import QuerySystem
+        # Process the query using structured response (answer + optional chart) with instrumentation
         qs = QuerySystem(cli.db_path)
-        structured = qs.query_structured(request.question, force_chart=request.force_chart)
+        started = time.monotonic()
+        with capture_logs() as log_handler:
+            structured, timings, model_used = qs.query_structured_instrumented(
+                request.question,
+                force_chart=request.force_chart,
+            )
         answer = structured.get('answer', '')
         
         # Get accuracy summary if requested
@@ -273,15 +282,59 @@ async def query_data_endpoint(request: QueryRequest):
         if request.show_accuracy:
             accuracy_summary = cli.get_verification_summary()
         
-        return QueryResponse(
+        response = QueryResponse(
             answer=answer,
             accuracy_summary=accuracy_summary,
             show_chart=structured.get('show_chart', False),
             chart=structured.get('chart')
         )
+        # Fire-and-forget telemetry (synchronous call with small timeout; non-blocking failure)
+        try:
+            if telemetry.is_enabled():
+                total_ms = timings.get('total_ms') if isinstance(timings, dict) else int((time.monotonic() - started) * 1000)
+                logs_text = log_handler.get_value()
+                event = telemetry.build_event(
+                    question=request.question,
+                    answer=answer,
+                    status='ok',
+                    source='web',
+                    user_id=request.user_id,
+                    session_id=request.session_id,
+                    model=model_used,
+                    total_ms=total_ms,
+                    timings=timings if isinstance(timings, dict) else {},
+                    chart=structured.get('chart'),
+                    logs_text=logs_text,
+                    metadata={'show_accuracy': request.show_accuracy, 'force_chart': request.force_chart},
+                )
+                telemetry.send_query_event(event)
+        except Exception:
+            pass
+        return response
         
     except Exception as e:
         logger.error(f"Error processing query: {e}")
+        # Attempt to send a failed telemetry event as well
+        try:
+            if telemetry.is_enabled():
+                event = telemetry.build_event(
+                    question=getattr(request, 'question', ''),
+                    answer=None,
+                    status='error',
+                    source='web',
+                    user_id=getattr(request, 'user_id', None),
+                    session_id=getattr(request, 'session_id', None),
+                    model=None,
+                    total_ms=None,
+                    timings=None,
+                    chart=None,
+                    logs_text=None,
+                    error=str(e),
+                    metadata={'endpoint': '/query'},
+                )
+                telemetry.send_query_event(event)
+        except Exception:
+            pass
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 @app.post("/ingest", response_model=IngestionResponse)

@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import logging
 from typing import Optional
+import time
 import sqlite3
 
 # Disable tokenizer parallelism warnings/deadlocks by default
@@ -96,15 +97,50 @@ class ImpactOSCLI:
         """
         try:
             logger.info(f"Processing query: {question}")
-            
-            # Import and use query system
-            from query import query_data
-            answer = query_data(question, self.db_path)
-            
+            from telemetry import telemetry, capture_logs
+            from query import QuerySystem
+            qs = QuerySystem(self.db_path)
+            started = time.monotonic()
+            with capture_logs() as log_handler:
+                structured, timings, model_used = qs.query_structured_instrumented(question)
+            answer = structured.get('answer', '')
+            # Telemetry (source=cli)
+            try:
+                if telemetry.is_enabled():
+                    event = telemetry.build_event(
+                        question=question,
+                        answer=answer,
+                        status='ok',
+                        source='cli',
+                        user_id=None,
+                        session_id=None,
+                        model=model_used,
+                        total_ms=timings.get('total_ms', int((time.monotonic() - started) * 1000)),
+                        timings=timings,
+                        chart=structured.get('chart'),
+                        logs_text=log_handler.get_value(),
+                        metadata={'invoked_via': 'ImpactOSCLI.query_data'},
+                    )
+                    telemetry.send_query_event(event)
+            except Exception:
+                pass
             return answer
-            
         except Exception as e:
             logger.error(f"Error during query: {e}")
+            # Attempt to send failure telemetry
+            try:
+                from telemetry import telemetry
+                if telemetry.is_enabled():
+                    event = telemetry.build_event(
+                        question=question,
+                        answer=None,
+                        status='error',
+                        source='cli',
+                        error=str(e),
+                    )
+                    telemetry.send_query_event(event)
+            except Exception:
+                pass
             return f"Error processing query: {e}"
     
     def show_schema_info(self):
@@ -454,12 +490,35 @@ def main():
             
         elif args.command == 'query':
             if getattr(args, 'structured', False):
-                # Structured response with optional chart payload
+                # Structured response with optional chart payload, include telemetry
+                from telemetry import telemetry, capture_logs
                 from query import QuerySystem
                 qs = QuerySystem(cli.db_path)
-                structured = qs.query_structured(args.question, force_chart=bool(getattr(args, 'force_chart', False)))
+                started = time.monotonic()
+                with capture_logs() as log_handler:
+                    structured, timings, model_used = qs.query_structured_instrumented(
+                        args.question,
+                        force_chart=bool(getattr(args, 'force_chart', False))
+                    )
                 import json as _json
                 print(_json.dumps(structured, indent=2))
+                try:
+                    if telemetry.is_enabled():
+                        event = telemetry.build_event(
+                            question=args.question,
+                            answer=structured.get('answer'),
+                            status='ok',
+                            source='cli',
+                            model=model_used,
+                            total_ms=timings.get('total_ms', int((time.monotonic() - started) * 1000)),
+                            timings=timings,
+                            chart=structured.get('chart'),
+                            logs_text=log_handler.get_value(),
+                            metadata={'structured': True, 'force_chart': bool(getattr(args, 'force_chart', False))},
+                        )
+                        telemetry.send_query_event(event)
+                except Exception:
+                    pass
             else:
                 answer = cli.query_data(args.question)
                 print(f"\nAnswer: {answer}")

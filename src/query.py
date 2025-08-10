@@ -13,6 +13,7 @@ Features focus on accuracy and completeness over artificial speed limits.
 import sqlite3
 import os
 from typing import Dict, List, Any, Optional, Tuple
+import time
 import logging
 from datetime import datetime
 
@@ -1228,6 +1229,73 @@ class QuerySystem:
             'show_chart': bool(want_chart),
             'chart': chart_payload
         }
+
+    def query_structured_instrumented(self, question: str, force_chart: Optional[bool] = None) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[str]]:
+        """Like query_structured, but also returns a timings dict and used model.
+
+        Returns tuple: (structured_response, timings, model_used)
+        timings keys: analyze_ms, hybrid_search_ms, sql_direct_ms, intelligent_filter_ms,
+        answer_ms, chart_ms
+        """
+        timings: Dict[str, Any] = {}
+        t0 = time.monotonic()
+        logger.info(f"Processing structured query (instrumented): {question}")
+
+        # Analyze
+        t = time.monotonic()
+        analysis = self._analyze_query(question)
+        timings['analyze_ms'] = int((time.monotonic() - t) * 1000)
+
+        # Search
+        t = time.monotonic()
+        results = self._enhanced_hybrid_search(question, analysis)
+        timings['hybrid_search_ms'] = int((time.monotonic() - t) * 1000)
+
+        # Try deterministic answer
+        t = time.monotonic()
+        answer = self._try_sql_direct_answer(question, analysis, results)
+        timings['sql_direct_ms'] = int((time.monotonic() - t) * 1000)
+
+        filtered_results: List[Dict[str, Any]] = []
+        # If needed, intelligent filter + GPT/fallback
+        if not answer:
+            t = time.monotonic()
+            filtered_results = self._intelligent_filter_for_gpt(results, analysis)
+            timings['intelligent_filter_ms'] = int((time.monotonic() - t) * 1000)
+            t = time.monotonic()
+            if self.openai_client and filtered_results:
+                answer = self._generate_gpt_answer(question, filtered_results)
+            else:
+                answer = self._generate_fallback_answer(question, results)
+            timings['answer_ms'] = int((time.monotonic() - t) * 1000)
+        else:
+            timings['intelligent_filter_ms'] = 0
+            timings['answer_ms'] = 0
+
+        # Visualization
+        t = time.monotonic()
+        want_chart_default, suggested_type = self._detect_chart_intent(question, analysis)
+        want_chart = force_chart if force_chart is not None else want_chart_default
+        chart_payload = None
+        if want_chart:
+            if suggested_type == 'line' or self._is_time_series_request(question, analysis):
+                chart_payload = self._build_time_series_chart(analysis)
+            if chart_payload is None:
+                chart_payload = self._build_chart_data(results, analysis, suggested_type)
+            if chart_payload is None:
+                want_chart = False
+        timings['chart_ms'] = int((time.monotonic() - t) * 1000)
+
+        total_ms = int((time.monotonic() - t0) * 1000)
+        timings['total_ms'] = total_ms
+
+        structured = {
+            'answer': answer,
+            'show_chart': bool(want_chart),
+            'chart': chart_payload
+        }
+        model_used = getattr(self, '_last_answer_model', None)
+        return structured, timings, model_used
 
 
 def query_data(question: str, db_path: str = "db/impactos.db") -> str:
