@@ -61,6 +61,12 @@ class QuerySystem:
         self.config_manager = get_config_manager()
         self._intent_cache: Dict[str, Dict[str, Any]] = {}
         self._answer_cache: Dict[str, str] = {}
+        # Temporarily force LLM-based intent classification for all queries
+        try:
+            if hasattr(self.config, 'analysis'):
+                setattr(self.config.analysis, 'use_llm_for_intent', True)
+        except Exception:
+            pass
     
     def _initialize_openai(self) -> Optional[OpenAI]:
         """Initialize OpenAI client with API key."""
@@ -198,6 +204,8 @@ class QuerySystem:
             
             # 1. Analyze query intent and extract key terms
             query_analysis = self._analyze_query(question)
+            if not query_analysis.get('intent_confident', False):
+                return "I'm not sure what you wanted. Please rephrase your question."
             
             # 2. Perform enhanced hybrid search with intelligent limits
             results = self._enhanced_hybrid_search(question, query_analysis)
@@ -245,8 +253,24 @@ class QuerySystem:
         if question in self._intent_cache:
             return self._intent_cache[question]
         try:
-            categories = list(cfg.category_descriptions.keys()) if cfg.category_descriptions else []
-            aggregations = list(cfg.aggregation_descriptions.keys()) if cfg.aggregation_descriptions else []
+            # Prefer explicit descriptions; fallback to configured keyword/pattern labels
+            categories = []
+            if getattr(cfg, 'category_descriptions', None):
+                categories = list(cfg.category_descriptions.keys())
+            elif getattr(cfg, 'category_keywords', None):
+                try:
+                    categories = list(cfg.category_keywords.keys())
+                except Exception:
+                    categories = []
+
+            aggregations = []
+            if getattr(cfg, 'aggregation_descriptions', None):
+                aggregations = list(cfg.aggregation_descriptions.keys())
+            elif getattr(cfg, 'aggregation_patterns', None):
+                try:
+                    aggregations = list(cfg.aggregation_patterns.keys())
+                except Exception:
+                    aggregations = []
             prompt = (
                 "Classify the question into zero or more categories and aggregations.\n"
                 f"Categories: {', '.join(categories)}\n"
@@ -316,11 +340,38 @@ class QuerySystem:
                         d3 = None
                     data = d3 or data
             if isinstance(data, dict):
+                try:
+                    cats = data.get('categories') or []
+                    aggs = data.get('aggregations') or []
+                    qtype_v = data.get('query_type')
+                    # Log both counts and actual labels (truncated for safety)
+                    logger.info(
+                        "Intent LLM parsed: query_type=%s categories=%s aggregations=%s",
+                        qtype_v,
+                        cats[:10],
+                        aggs[:10],
+                    )
+                except Exception:
+                    pass
                 self._intent_cache[question] = data
                 return data
         except Exception as e:
             logger.warning(f"LLM intent classification failed: {e}")
         return None
+
+    def _is_intent_confident(self, intent_result: Optional[Dict[str, Any]]) -> bool:
+        """Heuristic to determine if LLM intent extraction is confident enough to proceed."""
+        try:
+            if not isinstance(intent_result, dict):
+                return False
+            categories = intent_result.get('categories') or []
+            aggregations = intent_result.get('aggregations') or []
+            query_type = intent_result.get('query_type')
+            if query_type not in ('aggregation', 'descriptive', 'analytical'):
+                return False
+            return bool(categories or aggregations)
+        except Exception:
+            return False
     
     def _analyze_query(self, question: str) -> Dict[str, Any]:
         """Enhanced query analysis to extract intent and key terms."""
@@ -332,16 +383,26 @@ class QuerySystem:
             'metrics': [],
             'time_references': [],
             'aggregations': [],
-            'query_type': 'descriptive'  # New field for query type classification
+            'query_type': 'descriptive',  # New field for query type classification
+            'llm_intent_used': False,
+            'intent_confident': False,
         }
         
         # Optionally classify with a lightweight LLM first
         llm_intent = self._classify_intent_with_llm(question)
         if llm_intent:
+            analysis['llm_intent_used'] = True
             analysis['categories'] = llm_intent.get('categories', [])
             analysis['aggregations'] = llm_intent.get('aggregations', [])
             if llm_intent.get('query_type') in ('aggregation','descriptive','analytical'):
                 analysis['query_type'] = llm_intent['query_type']
+            analysis['intent_confident'] = self._is_intent_confident(llm_intent)
+        else:
+            # If LLM intent is enforced but failed (e.g., no API key or parse error), mark and return early
+            if getattr(self.config.analysis, 'use_llm_for_intent', False):
+                analysis['llm_intent_used'] = bool(self.openai_client)
+                analysis['intent_confident'] = False
+                return analysis
         
         # Prefer embedding-based intent detection if available
         cfg = getattr(self.config, 'analysis', None)
@@ -1198,6 +1259,12 @@ class QuerySystem:
         logger.info(f"Processing structured query: {question}")
         # Analyze and retrieve results using existing pipeline
         analysis = self._analyze_query(question)
+        if not analysis.get('intent_confident', False):
+            return {
+                'answer': "I'm not sure what you wanted. Please rephrase your question.",
+                'show_chart': False,
+                'chart': None,
+            }
         results = self._enhanced_hybrid_search(question, analysis)
         
         # Try deterministic answer first
@@ -1245,6 +1312,25 @@ class QuerySystem:
         t = time.monotonic()
         analysis = self._analyze_query(question)
         timings['analyze_ms'] = int((time.monotonic() - t) * 1000)
+        if not analysis.get('intent_confident', False):
+            total_ms = int((time.monotonic() - t0) * 1000)
+            timings.update({
+                'hybrid_search_ms': 0,
+                'sql_direct_ms': 0,
+                'intelligent_filter_ms': 0,
+                'answer_ms': 0,
+                'chart_ms': 0,
+                'total_ms': total_ms,
+            })
+            return (
+                {
+                    'answer': "I'm not sure what you wanted. Please rephrase your question.",
+                    'show_chart': False,
+                    'chart': None,
+                },
+                timings,
+                getattr(self, '_last_answer_model', None),
+            )
 
         # Search
         t = time.monotonic()

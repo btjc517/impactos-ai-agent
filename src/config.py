@@ -140,8 +140,8 @@ class AnalysisConfig:
     use_llm_for_intent: bool = False
     llm_intent_model: str = "gpt-5-nano"
     llm_intent_temperature: float = 0.0
-    # Default tightened to 150 as per GPT-5 intent budget
-    llm_intent_max_tokens: int = 150
+    # Increased to allow richer extraction when needed
+    llm_intent_max_tokens: int = 10000
 
 
 @dataclass
