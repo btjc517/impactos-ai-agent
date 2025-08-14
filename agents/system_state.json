@@ -1,0 +1,30 @@
+{
+  "system_status": "stopped",
+  "active_agents": [],
+  "last_update": "2025-08-14T21:31:02.389727",
+  "agent_info": {
+    "Architect": {
+      "model": "claude-3-opus-20240229",
+      "role": "System architect and orchestrator",
+      "registered_at": "2025-08-14T21:30:32.612764",
+      "status": "inactive",
+      "unregistered_at": "2025-08-14T21:31:02.390877"
+    },
+    "DataAgent": {
+      "model": "claude-3-5-sonnet-20241022",
+      "role": "Data processing specialist",
+      "registered_at": "2025-08-14T21:30:34.176859",
+      "status": "inactive",
+      "unregistered_at": "2025-08-14T21:31:02.391665"
+    },
+    "QueryAgent": {
+      "model": "claude-3-5-sonnet-20241022",
+      "role": "Query processing specialist",
+      "registered_at": "2025-08-14T21:30:36.069271",
+      "status": "inactive",
+      "unregistered_at": "2025-08-14T21:31:02.392237"
+    }
+  },
+  "orchestrator_started": "2025-08-14T21:30:36.070077",
+  "orchestrator_stopped": "2025-08-14T21:31:02.389310"
+}

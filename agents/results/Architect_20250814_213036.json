@@ -1,0 +1,5 @@
+{
+  "status": "error",
+  "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-3-opus-20240229'}}",
+  "agent": "Architect"
+}

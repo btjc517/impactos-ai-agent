@@ -1,0 +1,53 @@
+[
+  {
+    "type": "review",
+    "agent": "Architect",
+    "data": {
+      "results": {
+        "status": "success",
+        "question": "Test query: What metrics do we track?",
+        "answer": "It appears that there are no documents uploaded to search through for information about the metrics being tracked. Could you please upload any relevant documents or specify the data you need help with, so I can assist you further?",
+        "citations": [],
+        "visualization": null,
+        "agent": "QueryAgent",
+        "timestamp": "2025-08-14T21:28:12.408656",
+        "intent": {
+          "intent_type": "factual_listing",
+          "data_needs": [
+            "metrics catalog",
+            "measurement frameworks",
+            "data dictionary"
+          ],
+          "metrics": [],
+          "time_range": "current",
+          "output_format": "categorized_list",
+          "complexity": "low",
+          "analysis_notes": {
+            "query_purpose": "Basic information request about available metrics",
+            "clarification_needed": false,
+            "visualization_recommended": false,
+            "key_requirements": [
+              "Provide comprehensive overview of tracked metrics",
+              "Group metrics by category/type",
+              "Include core metrics only"
+            ]
+          }
+        }
+      },
+      "criteria": [
+        "accuracy",
+        "completeness",
+        "citations"
+      ]
+    },
+    "id": 1,
+    "created_at": "2025-08-14T21:28:12.411659",
+    "status": "failed",
+    "updated_at": "2025-08-14T21:30:36.258608",
+    "result": {
+      "status": "error",
+      "error": "Error code: 404 - {'type': 'error', 'error': {'type': 'not_found_error', 'message': 'model: claude-3-opus-20240229'}}",
+      "agent": "Architect"
+    }
+  }
+]

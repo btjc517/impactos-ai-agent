@@ -1,0 +1,27 @@
+{
+  "status": "success",
+  "intent": {
+    "intent_type": "factual_listing",
+    "data_needs": [
+      "metrics catalog",
+      "measurement frameworks",
+      "data dictionary"
+    ],
+    "metrics": [],
+    "time_range": "current",
+    "output_format": "categorized_list",
+    "complexity": "low",
+    "analysis_notes": {
+      "query_purpose": "Basic information request about available metrics",
+      "clarification_needed": false,
+      "visualization_recommended": false,
+      "key_requirements": [
+        "Provide comprehensive overview of tracked metrics",
+        "Group metrics by category/type",
+        "Include core metrics only"
+      ]
+    }
+  },
+  "question": "Test query: What metrics do we track?",
+  "agent": "QueryAgent"
+}

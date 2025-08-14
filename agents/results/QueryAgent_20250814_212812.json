@@ -1,0 +1,9 @@
+{
+  "status": "success",
+  "question": "Test query: What metrics do we track?",
+  "answer": "It appears that there are no documents uploaded to search through for information about the metrics being tracked. Could you please upload any relevant documents or specify the data you need help with, so I can assist you further?",
+  "citations": [],
+  "visualization": null,
+  "agent": "QueryAgent",
+  "timestamp": "2025-08-14T21:28:12.408656"
+}
