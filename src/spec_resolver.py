@@ -1,16 +1,15 @@
 """
-Generic, data-driven spec resolver that maps Bronze sheets to Silver fact specs
-without hard-coded domain logic.
+Dynamic spec resolver that maps Bronze sheets to Silver fact specs using
+data-driven fact discovery and adaptive learning.
 
-This implementation satisfies all requirements from the original prompt:
-- Loads facts from config/facts.json or concept graph
+This implementation provides:
+- Dynamic fact discovery from data patterns (replaces static facts.json)
 - Sheet profiling with dtype detection, unit tokens, date-likeness
 - Semantic candidate fact scoring with configurable thresholds
 - Role mapping with composite scoring (w_graph + w_type + w_unit + w_history)
 - LLM assistance for missing/ambiguous roles
-- Comprehensive validation
-- Learning and success tracking
-- Multi-spec support with quality scores
+- Comprehensive validation and learning
+- Adaptive fact definitions that improve over time
 """
 
 from __future__ import annotations
@@ -23,6 +22,9 @@ import re
 from typing import Dict, Any, List, Optional, Tuple
 import sqlite3
 import pandas as pd
+
+# Import dynamic fact system
+from dynamic_facts import DynamicFactConfig, DynamicFactManager
 
 # Suppress tokenizer parallelism warnings
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
@@ -322,52 +324,39 @@ def _hash_spec(spec: Dict[str, Any]) -> str:
 
 
 class FactsConfig:
-    """Loads and manages fact definitions from config/facts.json or concept graph."""
+    """Dynamic fact manager with backward compatibility for legacy FactsConfig interface."""
     
     def __init__(self, config_path: str = "config/facts.json", db_path: str = "db/impactos.db"):
         self.config_path = config_path
         self.db_path = db_path
+        # Use dynamic fact config as backend
+        self.dynamic_config = DynamicFactConfig(config_path, db_path)
         self._facts_cache: Optional[Dict[str, Dict[str, Any]]] = None
     
     def load_facts(self) -> Dict[str, Dict[str, Any]]:
-        """Load fact definitions from config file or concept graph."""
-        if self._facts_cache is not None:
-            return self._facts_cache
-            
-        # Try config file first
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, 'r') as f:
-                    self._facts_cache = json.load(f)
-                    return self._facts_cache
-            except Exception as e:
-                logger.warning(f"Failed to load facts config from {self.config_path}: {e}")
+        """Load fact definitions using dynamic system with legacy format."""
+        # Always get fresh facts from dynamic system to include learned facts
+        self._facts_cache = self.dynamic_config.load_facts()
+        return self._facts_cache
+    
+    def discover_facts_from_data(self, df: pd.DataFrame, source_context: Dict[str, Any]) -> int:
+        """Discover new facts from DataFrame and add to system."""
+        discovered_facts = self.dynamic_config.discover_and_learn(df, source_context)
+        logger.info(f"Discovered {len(discovered_facts)} new fact patterns from data")
         
-        # Fallback to concept graph
-        try:
-            from semantic_resolver import ConceptGraph
-            graph = ConceptGraph(self.db_path)
-            facts = {}
-            
-            for fact_concept in graph.list_concepts('fact'):
-                fact_key = fact_concept['key']
-                facts[fact_key] = {
-                    "required": ["value", "date"],
-                    "optional": [],
-                    "role_hints": {
-                        "value": {"dtype": "numeric"},
-                        "date": {"dtype": "date"}
-                    },
-                    "description": fact_concept.get('description', fact_concept.get('name', '')),
-                    "base_currency": "GBP"
-                }
-            
-            self._facts_cache = facts
-            return facts
-            
-        except Exception as e:
-            logger.error(f"Failed to load facts from concept graph: {e}")
-            return {}
+        # Clear cache to include new facts
+        self._facts_cache = None
+        return len(discovered_facts)
+    
+    def provide_extraction_feedback(self, fact_key: str, source_file: str, 
+                                  success_score: float, feedback_data: Dict[str, Any]):
+        """Provide feedback on fact extraction performance for learning."""
+        self.dynamic_config.provide_feedback(fact_key, source_file, success_score, feedback_data)
+        logger.debug(f"Provided feedback for fact {fact_key}: score={success_score}")
+        
+    def get_dynamic_manager(self) -> DynamicFactManager:
+        """Get access to underlying dynamic fact manager for advanced operations."""
+        return self.dynamic_config.fact_manager
 
 
 class SheetProfiler:

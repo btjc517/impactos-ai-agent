@@ -68,6 +68,24 @@ python src/main.py query "What are our total volunteering hours?"
 
 ## Development Guidelines
 
+### Commit Conventions
+- Use Conventional Commits with types: `feat:` (new feature), `fix:` (bug fix), `docs:` (documentation), `chore:` (maintenance), `refactor:` (code improvement without changing behavior), `test:` (adding tests), `perf:` (performance improvement), `breaking:` (breaking changes)
+- Subject line: Imperative mood, concise (≤50 chars), e.g., "feat: Add framework mapping validation"
+- Body: Include rationale for changes, impact on existing functionality, and any migration notes
+- Commit incremental, logical changes that maintain system stability
+
+### Python Coding Standards
+- **PEP 8 Compliance**: Indentation (4 spaces), line length ≤79 chars, imports at top (standard, third-party, local)
+- **Naming Conventions**: 
+  - Variables/functions: snake_case (e.g., `process_impact_metrics`)
+  - Classes: CamelCase (e.g., `FrameworkMapper`)
+  - Constants: UPPER_SNAKE_CASE
+- **Docstrings**: Use Google style for functions/classes with parameter types and return values
+- **Error Handling**: Use try/except for file I/O, API calls; log errors meaningfully with context
+- **Dependencies**: Use existing dependencies when possible; justify new dependencies with clear benefits
+- **Backward Compatibility**: Ensure existing APIs and interfaces continue working unless marked deprecated
+- **Testing**: Add comprehensive tests for all new functionality using existing testing infrastructure
+
 ### Code Standards
 - Follow PEP 8 compliance with Google-style docstrings
 - Use existing patterns: extend rather than rewrite components
@@ -81,6 +99,22 @@ python src/main.py query "What are our total volunteering hours?"
 - **Runtime Adaptability**: Facts, concepts, and processing pipelines should be configurable at runtime, not compile-time
 - **Modular Design**: New features should integrate cleanly without breaking existing functionality
 - **Backward Compatibility**: Ensure existing CLI and programmatic interfaces continue working
+
+### Architecture & Workflow Standards
+- **Extension Strategy**: Prefer extending existing modules (e.g., adding new framework support to `frameworks.py`) over creating parallel implementations
+- **Interface Stability**: Maintain stable public interfaces for core components (QuerySystem, IngestionPipeline, etc.)
+- **Configuration Management**: Use configuration files in `config/` for behavior changes rather than hardcoded values
+- **Testing Integration**: Leverage existing test infrastructure in `src/testing/` for all new features
+- **Performance Considerations**: Use performance tracking to ensure new features don't degrade existing functionality
+- **Modularity**: Design new features as independent modules that integrate cleanly with existing architecture
+
+### Development Workflow
+- **Pre-Development Assessment**: Always examine existing code patterns and interfaces before implementing new features
+- **Incremental Development**: Break large features into smaller, testable increments that can be safely deployed
+- **Feature Flags**: Use configuration-based feature flags for gradual rollout of new capabilities
+- **Documentation Updates**: Update README, docstrings, and inline documentation with any changes
+- **Testing Requirements**: Every change must include appropriate test coverage and pass existing tests
+- **Performance Validation**: Use existing performance tracking to validate that changes meet quality standards
 
 ### Testing Requirements
 - Use the comprehensive testing infrastructure in `src/testing/`
@@ -138,6 +172,79 @@ The system supports multiple social value frameworks:
 
 Framework mappings are dynamically loaded and extensible through the concept graph system.
 
+## Development Templates & Patterns
+
+### Test Case Template
+When creating new test cases for `src/testing/test_cases.py`:
+
+```python
+TestCase(
+    id="your_test_id",
+    query="Natural language question",
+    query_type="aggregation|descriptive|analytical",
+    complexity="simple|medium|complex",
+    expected_answer_keywords=["keyword1", "keyword2"],
+    expected_sources=["file1.xlsx", "file2.csv"],
+    expected_metrics={"metric_name": "expected_value"},
+    expected_frameworks=["MAC", "SDG"],
+    description="Clear description of what this test validates",
+    min_response_quality=0.7
+)
+```
+
+### Framework Mapping Template
+When adding new framework mappings in `frameworks.py`:
+
+```python
+framework_mapping = {
+    'framework_name': {
+        'category_id': 'Human-readable description',
+        'another_id': 'Another description'
+    }
+}
+```
+
+### Configuration Addition Template
+When adding new configuration options in `config.py`:
+
+```python
+@dataclass
+class NewFeatureConfig:
+    """Configuration for new feature."""
+    enabled: bool = True
+    threshold: float = 0.5
+    max_items: int = 100
+    
+    def validate(self) -> bool:
+        """Validate configuration values."""
+        return 0.0 <= self.threshold <= 1.0 and self.max_items > 0
+```
+
+### Error Handling Pattern
+Standard error handling for the project:
+
+```python
+try:
+    result = risky_operation()
+    logger.info(f"Operation completed successfully: {len(result)} items")
+    return result
+except SpecificException as e:
+    logger.warning(f"Expected error in operation: {e}")
+    return fallback_result()
+except Exception as e:
+    logger.error(f"Unexpected error in operation: {e}")
+    raise ProcessingError(f"Operation failed: {e}") from e
+```
+
+### Performance Measurement Pattern
+When adding performance tracking:
+
+```python
+with self.metrics_collector.time_operation('operation_name'):
+    result = expensive_operation()
+    self.metrics_collector.record_operation_result(len(result))
+```
+
 ## Performance and Quality
 
 ### Performance Monitoring
@@ -178,6 +285,26 @@ Framework mappings are dynamically loaded and extensible through the concept gra
 - Database initialization: System auto-initializes database on first run
 - Virtual environment: Recommended to use `impactos-env-new` for dependency isolation
 - Memory issues: Configure limits in `config/system_config.json` scalability section
+
+### Security & Production Considerations
+- **API Security**: Design internal APIs with future external exposure in mind
+- **Data Protection**: Handle sensitive data according to existing patterns in the codebase
+- **Environment Configuration**: Use environment variables for sensitive configuration (API keys, database URLs)
+- **Audit Trails**: Consider logging and audit requirements for enterprise use cases
+- **Error Handling**: Implement comprehensive error handling with appropriate logging levels
+
+### Long-term Vision Alignment
+- **Scalability**: Design features to work from single-user CLI to multi-tenant web application
+- **Web UI Readiness**: Structure backend logic to be easily consumable by future web interfaces
+- **API Potential**: Design internal interfaces that could be exposed as REST APIs
+- **Enterprise Features**: Consider requirements for role-based access, audit logging, and advanced security
+- **Open Source Sustainability**: Maintain clear separation between core open-source features and potential commercial extensions
+
+### Quality Assurance
+- **Test Coverage**: Maintain high test coverage using existing testing infrastructure
+- **Performance Benchmarks**: Use performance tracking to ensure system improvements over time
+- **Code Quality**: Regular refactoring to maintain code quality while preserving functionality
+- **Documentation Currency**: Keep all documentation aligned with current system capabilities
 
 ### Performance Optimization
 - Adjust batch sizes in configuration for memory-constrained environments

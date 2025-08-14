@@ -1,0 +1,456 @@
+{
+  "system.database.path": {
+    "data_type": "string",
+    "required": true,
+    "default_value": "db/impactos.db",
+    "validation_rules": [
+      {
+        "type": "regex",
+        "pattern": "^[\\w\\-./]+\\.db$"
+      }
+    ],
+    "description": "Path to the SQLite database file",
+    "scope": "global"
+  },
+  "system.processing.enable_fact_discovery": {
+    "data_type": "boolean",
+    "default_value": true,
+    "description": "Enable dynamic fact discovery from data",
+    "scope": "global"
+  },
+  "system.processing.enable_flexible_pipeline": {
+    "data_type": "boolean",
+    "default_value": true,
+    "description": "Enable flexible processing pipeline instead of hardcoded medallion",
+    "scope": "global"
+  },
+  "system.processing.default_pipeline": {
+    "data_type": "string",
+    "default_value": "dynamic_processing",
+    "validation_rules": [
+      {
+        "type": "enum",
+        "values": [
+          "dynamic_processing",
+          "medallion_compat", 
+          "streaming_pipeline",
+          "custom_analytics"
+        ]
+      }
+    ],
+    "description": "Default processing pipeline to use for data ingestion",
+    "scope": "global"
+  },
+  "system.processing.enable_schema_adaptation": {
+    "data_type": "boolean",
+    "default_value": true,
+    "description": "Enable adaptive schema management",
+    "scope": "global"
+  },
+  "system.processing.auto_transform": {
+    "data_type": "boolean",
+    "default_value": true,
+    "description": "Automatically run transformations after ingestion",
+    "scope": "global"
+  },
+  "system.processing.transform_mode": {
+    "data_type": "string",
+    "default_value": "sync",
+    "validation_rules": [
+      {
+        "type": "enum",
+        "values": ["sync", "async"]
+      }
+    ],
+    "description": "Mode for running transformations",
+    "scope": "global"
+  },
+  "ai.openai.api_key": {
+    "data_type": "string",
+    "required": false,
+    "validation_rules": [
+      {
+        "type": "regex",
+        "pattern": "^sk-[a-zA-Z0-9]{20,}$"
+      }
+    ],
+    "description": "OpenAI API key for AI-powered features",
+    "scope": "global"
+  },
+  "ai.model.default": {
+    "data_type": "string",
+    "default_value": "gpt-4o-mini",
+    "validation_rules": [
+      {
+        "type": "enum",
+        "values": [
+          "gpt-3.5-turbo",
+          "gpt-4",
+          "gpt-4-turbo",
+          "gpt-4o",
+          "gpt-4o-mini"
+        ]
+      }
+    ],
+    "description": "Default AI model for processing",
+    "scope": "global"
+  },
+  "ai.extraction.model": {
+    "data_type": "string",
+    "default_value": "gpt-4o-mini",
+    "description": "AI model for data extraction",
+    "scope": "global"
+  },
+  "ai.extraction.max_tokens": {
+    "data_type": "integer",
+    "default_value": 8000,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 100
+      },
+      {
+        "type": "max_value",
+        "value": 32000
+      }
+    ],
+    "description": "Maximum tokens for extraction requests",
+    "scope": "global"
+  },
+  "ai.extraction.temperature": {
+    "data_type": "float",
+    "default_value": 0.0,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 0.0
+      },
+      {
+        "type": "max_value",
+        "value": 2.0
+      }
+    ],
+    "description": "Temperature setting for AI extraction",
+    "scope": "global"
+  },
+  "vector_search.embedding_model": {
+    "data_type": "string",
+    "default_value": "all-MiniLM-L6-v2",
+    "description": "Sentence transformer model for embeddings",
+    "scope": "global"
+  },
+  "vector_search.embedding_dimension": {
+    "data_type": "integer",
+    "default_value": 384,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 50
+      },
+      {
+        "type": "max_value",
+        "value": 4096
+      }
+    ],
+    "description": "Dimension of embedding vectors",
+    "scope": "global"
+  },
+  "vector_search.similarity_threshold": {
+    "data_type": "float",
+    "default_value": 0.2,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 0.0
+      },
+      {
+        "type": "max_value",
+        "value": 1.0
+      }
+    ],
+    "description": "Minimum similarity threshold for vector search",
+    "scope": "global"
+  },
+  "vector_search.max_results": {
+    "data_type": "integer",
+    "default_value": 100,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 1
+      },
+      {
+        "type": "max_value",
+        "value": 1000
+      }
+    ],
+    "description": "Maximum number of vector search results",
+    "scope": "global"
+  },
+  "query_processing.max_results_for_gpt": {
+    "data_type": "integer",
+    "default_value": 25,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 1
+      },
+      {
+        "type": "max_value",
+        "value": 100
+      }
+    ],
+    "description": "Maximum results to send to GPT for processing",
+    "scope": "global"
+  },
+  "query_processing.enable_result_caching": {
+    "data_type": "boolean",
+    "default_value": true,
+    "description": "Enable caching of query results",
+    "scope": "global"
+  },
+  "query_processing.cache_ttl_seconds": {
+    "data_type": "integer",
+    "default_value": 3600,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 60
+      },
+      {
+        "type": "max_value",
+        "value": 86400
+      }
+    ],
+    "description": "Cache time-to-live in seconds",
+    "scope": "global"
+  },
+  "fact_discovery.confidence_threshold": {
+    "data_type": "float",
+    "default_value": 0.6,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 0.1
+      },
+      {
+        "type": "max_value",
+        "value": 1.0
+      }
+    ],
+    "description": "Minimum confidence threshold for discovered facts",
+    "scope": "global"
+  },
+  "fact_discovery.min_sample_count": {
+    "data_type": "integer",
+    "default_value": 3,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 1
+      }
+    ],
+    "description": "Minimum samples required to establish a fact pattern",
+    "scope": "global"
+  },
+  "fact_discovery.learning_rate": {
+    "data_type": "float",
+    "default_value": 0.1,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 0.01
+      },
+      {
+        "type": "max_value",
+        "value": 1.0
+      }
+    ],
+    "description": "Learning rate for fact confidence updates",
+    "scope": "global"
+  },
+  "schema_adaptation.auto_apply_threshold": {
+    "data_type": "float",
+    "default_value": 0.7,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 0.1
+      },
+      {
+        "type": "max_value",
+        "value": 1.0
+      }
+    ],
+    "description": "Confidence threshold for automatic schema changes",
+    "scope": "global"
+  },
+  "schema_adaptation.enable_column_dropping": {
+    "data_type": "boolean",
+    "default_value": false,
+    "description": "Allow automatic column dropping during schema evolution",
+    "scope": "global"
+  },
+  "pipeline.max_retries": {
+    "data_type": "integer",
+    "default_value": 3,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 0
+      },
+      {
+        "type": "max_value",
+        "value": 10
+      }
+    ],
+    "description": "Maximum number of retries for pipeline processors",
+    "scope": "pipeline"
+  },
+  "pipeline.timeout_seconds": {
+    "data_type": "integer",
+    "default_value": 1800,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 30
+      },
+      {
+        "type": "max_value",
+        "value": 7200
+      }
+    ],
+    "description": "Pipeline execution timeout in seconds",
+    "scope": "pipeline"
+  },
+  "pipeline.enable_parallel_execution": {
+    "data_type": "boolean",
+    "default_value": false,
+    "description": "Enable parallel execution of independent processors",
+    "scope": "pipeline"
+  },
+  "pipeline.error_handling": {
+    "data_type": "string",
+    "default_value": "continue_on_error",
+    "validation_rules": [
+      {
+        "type": "enum",
+        "values": ["stop_on_error", "continue_on_error", "retry_on_error"]
+      }
+    ],
+    "description": "How to handle processor errors in pipeline",
+    "scope": "pipeline"
+  },
+  "web_api.host": {
+    "data_type": "string",
+    "default_value": "0.0.0.0",
+    "description": "Host address for web API server",
+    "scope": "global"
+  },
+  "web_api.port": {
+    "data_type": "integer",
+    "default_value": 8000,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 1024
+      },
+      {
+        "type": "max_value",
+        "value": 65535
+      }
+    ],
+    "description": "Port for web API server",
+    "scope": "global"
+  },
+  "web_api.enable_cors": {
+    "data_type": "boolean",
+    "default_value": true,
+    "description": "Enable CORS for web API",
+    "scope": "global"
+  },
+  "logging.level": {
+    "data_type": "string",
+    "default_value": "INFO",
+    "validation_rules": [
+      {
+        "type": "enum",
+        "values": ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+      }
+    ],
+    "description": "Logging level for the application",
+    "scope": "global"
+  },
+  "logging.enable_file_logging": {
+    "data_type": "boolean",
+    "default_value": false,
+    "description": "Enable logging to files",
+    "scope": "global"
+  },
+  "logging.log_file_path": {
+    "data_type": "string",
+    "default_value": "logs/impactos.log",
+    "description": "Path for log files",
+    "scope": "global"
+  },
+  "performance.max_memory_usage_mb": {
+    "data_type": "integer",
+    "default_value": 2048,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 256
+      },
+      {
+        "type": "max_value",
+        "value": 32768
+      }
+    ],
+    "description": "Maximum memory usage limit in MB",
+    "scope": "global"
+  },
+  "performance.batch_size": {
+    "data_type": "integer",
+    "default_value": 100,
+    "validation_rules": [
+      {
+        "type": "min_value",
+        "value": 1
+      },
+      {
+        "type": "max_value",
+        "value": 10000
+      }
+    ],
+    "description": "Default batch size for processing operations",
+    "scope": "global"
+  },
+  "security.enable_api_key_auth": {
+    "data_type": "boolean",
+    "default_value": false,
+    "description": "Enable API key authentication for web endpoints",
+    "scope": "global"
+  },
+  "security.api_key_header": {
+    "data_type": "string",
+    "default_value": "X-API-Key",
+    "description": "Header name for API key authentication",
+    "scope": "global"
+  },
+  "tenant.default_tenant_id": {
+    "data_type": "string",
+    "default_value": "default",
+    "validation_rules": [
+      {
+        "type": "min_length",
+        "value": 1
+      },
+      {
+        "type": "max_length",
+        "value": 50
+      }
+    ],
+    "description": "Default tenant ID for multi-tenant operations",
+    "scope": "tenant"
+  }
+}

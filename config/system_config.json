@@ -79,8 +79,8 @@
       "carbon": ["carbon", "co2", "emission", "environmental", "scope 1", "scope 2", "scope 3"],
       "procurement": ["procurement", "supplier", "local spend", "supply chain"],
       "training": ["training", "learning", "development", "education", "skill"],
-      "diversity": ["diversity", "inclusion", "gender", "ethnicity", "equity"],
-      "employee": ["employee", "staff", "workforce", "personnel", "assistance"]
+      "diversity": ["diversity", "inclusion", "gender", "ethnicity", "equity", "pay gap", "gender pay gap", "salary gap", "wage gap", "compensation gap", "equal pay"],
+      "employee": ["employee", "staff", "workforce", "personnel", "assistance", "payroll", "compensation", "salary", "wages", "benefits"]
     },
     "aggregation_patterns": {
       "sum": ["total", "sum", "amount", "how much", "all", "overall"],

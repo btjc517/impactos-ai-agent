@@ -1,0 +1,259 @@
+{
+  "pipelines": {
+    "dynamic_processing": {
+      "name": "Dynamic Data Processing Pipeline",
+      "description": "Flexible pipeline that adapts processing stages based on data characteristics",
+      "processors": [
+        {
+          "processor_id": "data_ingestion",
+          "stage": "ingest",
+          "processor_type": "python_function",
+          "config": {
+            "function": "bronze_ingest.ingest_bronze"
+          },
+          "dependencies": [],
+          "conditions": [],
+          "enabled": true
+        },
+        {
+          "processor_id": "fact_discovery",
+          "stage": "validate",
+          "processor_type": "python_function",
+          "config": {
+            "function": "dynamic_facts.discover_facts_from_data"
+          },
+          "dependencies": ["data_ingestion"],
+          "conditions": [
+            {
+              "type": "data_exists",
+              "key": "dataframe"
+            }
+          ],
+          "enabled": true
+        },
+        {
+          "processor_id": "schema_adaptation",
+          "stage": "clean",
+          "processor_type": "conditional",
+          "config": {
+            "target_processor": "adaptive_schema",
+            "conditions": [
+              {
+                "type": "metadata_equals",
+                "key": "schema_adaptation_required",
+                "value": true
+              }
+            ],
+            "target_config": {
+              "function": "adaptive_schema.adapt_schema"
+            }
+          },
+          "dependencies": ["fact_discovery"],
+          "enabled": true
+        },
+        {
+          "processor_id": "flexible_transform",
+          "stage": "transform",
+          "processor_type": "python_function",
+          "config": {
+            "function": "silver_transform.run_flexible_transform"
+          },
+          "dependencies": ["schema_adaptation"],
+          "conditions": [
+            {
+              "type": "error_count",
+              "operator": "less_than",
+              "threshold": 5
+            }
+          ],
+          "enabled": true
+        },
+        {
+          "processor_id": "quality_validation",
+          "stage": "validate",
+          "processor_type": "python_function",
+          "config": {
+            "function": "quality_checks.validate_data_quality"
+          },
+          "dependencies": ["flexible_transform"],
+          "enabled": true
+        },
+        {
+          "processor_id": "adaptive_aggregation",
+          "stage": "aggregate",
+          "processor_type": "sql",
+          "config": {
+            "sql": "SELECT * FROM generate_adaptive_aggregates('{{pipeline_id}}', '{{run_id}}')",
+            "return_results": true
+          },
+          "dependencies": ["quality_validation"],
+          "conditions": [
+            {
+              "type": "error_count",
+              "operator": "less_than",
+              "threshold": 1
+            }
+          ],
+          "enabled": true
+        }
+      ],
+      "global_config": {
+        "max_retries": 3,
+        "timeout_seconds": 1800,
+        "enable_parallel_execution": false,
+        "error_handling": "continue_on_error"
+      }
+    },
+    "medallion_compat": {
+      "name": "Traditional Medallion Architecture",
+      "description": "Backward compatible Bronze→Silver→Gold pipeline",
+      "processors": [
+        {
+          "processor_id": "bronze_ingest",
+          "stage": "ingest",
+          "processor_type": "python_function",
+          "config": {
+            "function": "bronze_ingest.ingest_bronze"
+          },
+          "dependencies": [],
+          "enabled": true
+        },
+        {
+          "processor_id": "silver_transform",
+          "stage": "transform",
+          "processor_type": "python_function",
+          "config": {
+            "function": "silver_transform.run_transform"
+          },
+          "dependencies": ["bronze_ingest"],
+          "enabled": true
+        },
+        {
+          "processor_id": "gold_aggregation",
+          "stage": "aggregate",
+          "processor_type": "sql",
+          "config": {
+            "sql": "CREATE OR REPLACE VIEW gold_metrics AS SELECT * FROM fact_metrics WHERE confidence_score > 0.8",
+            "return_results": false
+          },
+          "dependencies": ["silver_transform"],
+          "enabled": true
+        }
+      ],
+      "global_config": {
+        "max_retries": 2,
+        "timeout_seconds": 600
+      }
+    },
+    "streaming_pipeline": {
+      "name": "Real-time Streaming Pipeline",
+      "description": "Pipeline optimized for streaming data processing",
+      "processors": [
+        {
+          "processor_id": "stream_ingest",
+          "stage": "ingest",
+          "processor_type": "python_function",
+          "config": {
+            "function": "streaming_ingest.process_stream_batch",
+            "batch_size": 100,
+            "max_wait_seconds": 5
+          },
+          "dependencies": [],
+          "enabled": true
+        },
+        {
+          "processor_id": "real_time_transform",
+          "stage": "transform",
+          "processor_type": "python_function",
+          "config": {
+            "function": "streaming_transform.transform_batch"
+          },
+          "dependencies": ["stream_ingest"],
+          "enabled": true
+        },
+        {
+          "processor_id": "incremental_aggregate",
+          "stage": "aggregate",
+          "processor_type": "sql",
+          "config": {
+            "sql": "CALL update_incremental_aggregates('{{run_id}}')",
+            "return_results": false
+          },
+          "dependencies": ["real_time_transform"],
+          "enabled": true
+        }
+      ],
+      "global_config": {
+        "max_retries": 1,
+        "timeout_seconds": 30,
+        "enable_parallel_execution": true
+      }
+    },
+    "custom_analytics": {
+      "name": "Custom Analytics Pipeline",
+      "description": "Configurable pipeline for custom analytical workflows",
+      "processors": [
+        {
+          "processor_id": "data_profiling",
+          "stage": "validate",
+          "processor_type": "python_function",
+          "config": {
+            "function": "data_profiling.profile_dataset"
+          },
+          "dependencies": [],
+          "enabled": true
+        },
+        {
+          "processor_id": "feature_engineering",
+          "stage": "transform",
+          "processor_type": "python_function",
+          "config": {
+            "function": "feature_engineering.create_features"
+          },
+          "dependencies": ["data_profiling"],
+          "conditions": [
+            {
+              "type": "metadata_equals",
+              "key": "data_quality_score",
+              "value": "high"
+            }
+          ],
+          "enabled": true
+        },
+        {
+          "processor_id": "ml_model_inference",
+          "stage": "enrich",
+          "processor_type": "python_function",
+          "config": {
+            "function": "ml_inference.run_model_predictions",
+            "model_name": "impact_classifier",
+            "confidence_threshold": 0.7
+          },
+          "dependencies": ["feature_engineering"],
+          "enabled": false
+        },
+        {
+          "processor_id": "analytics_export",
+          "stage": "export",
+          "processor_type": "python_function",
+          "config": {
+            "function": "analytics_export.export_results",
+            "format": "json",
+            "include_metadata": true
+          },
+          "dependencies": ["ml_model_inference"],
+          "enabled": true
+        }
+      ]
+    }
+  },
+  "default_pipeline": "dynamic_processing",
+  "global_settings": {
+    "enable_pipeline_selection": true,
+    "auto_fallback_to_medallion": true,
+    "log_level": "info",
+    "metrics_collection": true,
+    "enable_pipeline_caching": true,
+    "cache_ttl_seconds": 3600
+  }
+}

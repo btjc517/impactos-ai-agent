@@ -35,6 +35,8 @@ from llm_utils import (
     should_escalate_answer,
 )
 from ir_planner import generate_ir_with_validation
+from planner_agent import run_planner_with_tools as _run_planner_tools
+from planning_tools import run_planner as _run_planner_local
 
 # Setup logging is configured at the entrypoint; avoid per-module basicConfig
 logger = logging.getLogger(__name__)
@@ -204,13 +206,25 @@ class QuerySystem:
             if provisional_key in self._answer_cache:
                 return self._answer_cache[provisional_key]
             
+            # Resolve time policy for IR and downstream logic
+            time_policy = self._resolve_time_policy(question)
+
             # 1. Analyze query intent and extract key terms
             query_analysis = self._analyze_query(question)
             if not query_analysis.get('intent_confident', False):
                 return "I'm not sure what you wanted. Please rephrase your question."
-            
-            # 2. Perform enhanced hybrid search with intelligent limits
-            results = self._enhanced_hybrid_search(question, query_analysis)
+
+            # 2. IR-first planning/execution (default). Falls back to hybrid if empty/disabled
+            results: List[Dict[str, Any]] = []
+            ir_payload = self._run_ir_first(question, time_policy)
+            if ir_payload and isinstance(ir_payload.get('rows'), list) and ir_payload['rows']:
+                results = self._results_from_ir_rows(ir_payload.get('ir') or {}, ir_payload['rows'])
+                # If IR returns too few rows, complement with hybrid retrieval for richer context
+                if len(results) < max(3, int(self.config.query_processing.max_results_for_gpt * 0.2)):
+                    results.extend(self._enhanced_hybrid_search(question, query_analysis))
+            else:
+                # Fallback to existing hybrid search
+                results = self._enhanced_hybrid_search(question, query_analysis)
             
             logger.info(f"Retrieved {len(results)} total relevant results")
             
@@ -474,6 +488,61 @@ class QuerySystem:
                 analysis['time_references'].append(pattern)
         
         return analysis
+
+    # =====================
+    # IR-first integration
+    # =====================
+    def _run_ir_first(self, question: str, time_policy: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Execute IR planner as default path.
+
+        Prefers tools-based orchestrator when an OpenAI client is available; otherwise
+        uses the local planner. Returns planner payload or None on failure/disabled.
+        """
+        try:
+            if os.getenv('IMPACTOS_DISABLE_IR', '').lower() in ('1', 'true', 'yes'):
+                return None
+            # Prefer tools path when client is available
+            if self.openai_client is not None:
+                payload = _run_planner_tools(self.openai_client, question=question, time_policy=time_policy)
+            else:
+                payload = _run_planner_local(None, question=question, time_policy=time_policy)
+            if isinstance(payload, dict) and not payload.get('error'):
+                return payload
+        except Exception as e:
+            logger.info(f"IR planner failed gracefully, will fallback: {e}")
+        return None
+
+    def _results_from_ir_rows(self, ir: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Convert IR SQL rows into unified results for downstream answer generation."""
+        results: List[Dict[str, Any]] = []
+        try:
+            metric_name_hint = None
+            try:
+                metric_name_hint = (ir or {}).get('metric_id')
+            except Exception:
+                metric_name_hint = None
+            for row in (rows or []):
+                data = dict(row)
+                # Heuristic: aggregated if typical fields present
+                lower_keys = {k.lower() for k in data.keys()}
+                is_aggregated = any(k in lower_keys for k in ['total_value', 'count', 'avg', 'avg_value', 'min_value', 'max_value'])
+                # Ensure compatibility fields
+                if 'metric_name' not in data and metric_name_hint:
+                    data['metric_name'] = metric_name_hint
+                if 'filenames' in data and isinstance(data.get('filenames'), str) and 'filename' not in data:
+                    # Best-effort first filename for places expecting a single filename
+                    first = (data.get('filenames') or '').split(',')[0].strip()
+                    if first:
+                        data['filename'] = first
+                result = {
+                    'type': 'sql_aggregated_metric' if is_aggregated else 'sql_metric',
+                    'data': data,
+                    'relevance_score': 0.98 if is_aggregated else 0.9,
+                }
+                results.append(result)
+        except Exception as e:
+            logger.debug(f"Failed to convert IR rows to results: {e}")
+        return results
     
     def _enhanced_hybrid_search(self, question: str, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Enhanced hybrid search with intelligent result limits."""
@@ -481,12 +550,16 @@ class QuerySystem:
             results = []
             
             # 1. SQL-based search for metrics with enhanced queries
-            sql_results = self._enhanced_sql_search(analysis)
+            sql_results = self._enhanced_sql_search(question, analysis)
             results.extend(sql_results)
             
             # 1b. SQL-based search over Silver facts for row-level versatility
             silver_results = self._silver_sql_search(analysis)
             results.extend(silver_results)
+            
+            # 1c. Bronze layer search for direct data access (especially for gender pay gap)
+            bronze_results = self._bronze_sql_search(question, analysis)
+            results.extend(bronze_results)
             
             # 2. Proper FAISS vector similarity search
             vector_results = self._faiss_vector_search(question, analysis)
@@ -505,7 +578,7 @@ class QuerySystem:
             logger.error(f"Error in enhanced hybrid search: {e}")
             return []
     
-    def _enhanced_sql_search(self, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _enhanced_sql_search(self, question: str, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Enhanced SQL search with better aggregation handling."""
         try:
             results = []
@@ -532,7 +605,12 @@ class QuerySystem:
                     elif 'employee' in analysis.get('categories', []):
                         broad_search_terms.extend(['employee', 'staff', 'personnel', 'assistance'])
                     elif 'diversity' in analysis.get('categories', []):
-                        broad_search_terms.extend(['diversity', 'inclusion', 'gender', 'equality'])
+                        broad_search_terms.extend(['diversity', 'inclusion', 'gender', 'equality', 'pay gap', 'salary gap', 'wage gap', 'compensation gap', 'equal pay'])
+                    
+                    # Special handling for pay gap queries
+                    question_lower = question.lower()
+                    if any(term in question_lower for term in ['pay gap', 'gender pay gap', 'salary gap', 'wage gap', 'equal pay']):
+                        broad_search_terms.extend(['gender', 'pay', 'gap', 'salary', 'wage', 'compensation', 'average_gender_pay_gap', 'payroll'])
                     
                     if broad_search_terms:
                         text_conditions = []
@@ -808,6 +886,112 @@ class QuerySystem:
             logger.error(f"Error in Silver SQL search: {e}")
             return []
     
+    def _bronze_sql_search(self, question: str, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Search Bronze tables for direct data access, especially for gender pay gap and payroll data."""
+        try:
+            results: List[Dict[str, Any]] = []
+            question_lower = question.lower()
+            
+            # Check if this is a gender pay gap or payroll related query
+            is_payroll_query = any(term in question_lower for term in ['pay gap', 'gender pay gap', 'salary', 'wage', 'payroll', 'compensation', 'equal pay'])
+            is_diversity_category = 'diversity' in analysis.get('categories', []) or 'employee' in analysis.get('categories', [])
+            
+            if is_payroll_query or is_diversity_category:
+                import sqlite3
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.cursor()
+                    
+                    # Check if payroll bronze table exists
+                    cursor.execute("""
+                        SELECT name FROM sqlite_master 
+                        WHERE type='table' AND name LIKE 'bronze_%payroll%'
+                    """)
+                    payroll_tables = [row['name'] for row in cursor.fetchall()]
+                    
+                    for table_name in payroll_tables:
+                        # Get sample data to check columns
+                        cursor.execute(f"PRAGMA table_info({table_name})")
+                        columns = [row[1] for row in cursor.fetchall()]
+                        
+                        if 'gender_pay_gap_percent' in columns:
+                            # Query gender pay gap data
+                            cursor.execute(f"""
+                                SELECT employee_id, full_name, year, gender_pay_gap_percent, 
+                                       gross_pay_gbp, source_file, sheet_name, row_cell_ref
+                                FROM {table_name}
+                                WHERE gender_pay_gap_percent IS NOT NULL
+                                ORDER BY year DESC, employee_id
+                                LIMIT 20
+                            """)
+                            
+                            for row in cursor.fetchall():
+                                row_data = dict(row)
+                                results.append({
+                                    'type': 'bronze_data',
+                                    'relevance_score': 0.92,  # High relevance for direct bronze data
+                                    'data': {
+                                        'metric_name': f"gender_pay_gap_{row_data.get('employee_id', 'unknown')}",
+                                        'metric_value': float(row_data.get('gender_pay_gap_percent', 0)),
+                                        'metric_unit': '%',
+                                        'metric_category': 'diversity',
+                                        'context_description': f"Gender pay gap for {row_data.get('full_name', 'Employee')} in {row_data.get('year', 'unknown year')}",
+                                        'source_sheet_name': row_data.get('sheet_name'),
+                                        'source_cell_reference': row_data.get('row_cell_ref'),
+                                        'filename': row_data.get('source_file'),
+                                        'employee_id': row_data.get('employee_id'),
+                                        'employee_name': row_data.get('full_name'),
+                                        'year': row_data.get('year'),
+                                        'gross_pay': row_data.get('gross_pay_gbp')
+                                    }
+                                })
+                            
+                            # Also get aggregated statistics
+                            cursor.execute(f"""
+                                SELECT 
+                                    AVG(gender_pay_gap_percent) as avg_pay_gap,
+                                    MIN(gender_pay_gap_percent) as min_pay_gap,
+                                    MAX(gender_pay_gap_percent) as max_pay_gap,
+                                    COUNT(*) as employee_count,
+                                    source_file, sheet_name
+                                FROM {table_name}
+                                WHERE gender_pay_gap_percent IS NOT NULL
+                                GROUP BY source_file, sheet_name
+                            """)
+                            
+                            for agg_row in cursor.fetchall():
+                                agg_data = dict(agg_row)
+                                results.append({
+                                    'type': 'bronze_aggregated',
+                                    'relevance_score': 0.95,  # Higher relevance for aggregated data
+                                    'data': {
+                                        'metric_name': 'aggregated_gender_pay_gap_stats',
+                                        'metric_value': float(agg_data.get('avg_pay_gap', 0)),
+                                        'total_value': float(agg_data.get('avg_pay_gap', 0)),  # Add total_value for compatibility
+                                        'metric_unit': '%',
+                                        'metric_category': 'diversity',
+                                        'context_description': f"Gender pay gap statistics: avg={agg_data.get('avg_pay_gap', 0):.2f}%, range={agg_data.get('min_pay_gap', 0):.1f}% to {agg_data.get('max_pay_gap', 0):.1f}%, employees={agg_data.get('employee_count', 0)}",
+                                        'filename': agg_data.get('source_file'),
+                                        'filenames': agg_data.get('source_file'),  # Add filenames for compatibility
+                                        'source_sheet_name': agg_data.get('sheet_name'),
+                                        'source_cell_reference': 'J2:J16',  # Based on our earlier investigation
+                                        'count': agg_data.get('employee_count', 0),  # Add count for compatibility
+                                        'avg_value': agg_data.get('avg_pay_gap'),
+                                        'avg_pay_gap': agg_data.get('avg_pay_gap'),
+                                        'min_pay_gap': agg_data.get('min_pay_gap'),
+                                        'max_pay_gap': agg_data.get('max_pay_gap'),
+                                        'employee_count': agg_data.get('employee_count')
+                                    }
+                                })
+                
+                logger.info(f"Bronze SQL search found {len(results)} results for payroll/gender pay gap query")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in Bronze SQL search: {e}")
+            return []
+    
     def _faiss_vector_search(self, question: str, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Proper FAISS vector similarity search."""
         try:
@@ -928,8 +1112,8 @@ class QuerySystem:
             context_parts = []
             
             # Group results by type for better organization
-            aggregated_results = [r for r in results if r['type'] == 'sql_aggregated_metric']
-            individual_results = [r for r in results if r['type'] in ['sql_individual_metric', 'sql_metric']]
+            aggregated_results = [r for r in results if r['type'] in ['sql_aggregated_metric', 'bronze_aggregated']]
+            individual_results = [r for r in results if r['type'] in ['sql_individual_metric', 'sql_metric', 'bronze_data']]
             vector_results = [r for r in results if r['type'] == 'faiss_vector_match']
             
             # Format aggregated results first (most important for aggregation queries)
@@ -1123,8 +1307,8 @@ class QuerySystem:
         answer_parts = [f"Based on the comprehensive data analysis, here's what I found:\n"]
         
         # Group and summarize results
-        aggregated_results = [r for r in results if r['type'] == 'sql_aggregated_metric']
-        individual_results = [r for r in results if r['type'] in ['sql_individual_metric', 'sql_metric']]
+        aggregated_results = [r for r in results if r['type'] in ['sql_aggregated_metric', 'bronze_aggregated']]
+        individual_results = [r for r in results if r['type'] in ['sql_individual_metric', 'sql_metric', 'bronze_data']]
         faiss_results = [r for r in results if r['type'] == 'faiss_vector_match']
         
         # Show aggregated results first
@@ -1448,14 +1632,10 @@ class QuerySystem:
         if debug_time:
             print(f"[time] window: {time_policy}")
 
-        # Generate IR deterministically (low temp) and validate/repair once
-        try:
-            ir_obj, ir_meta = generate_ir_with_validation(self.openai_client, question, [], time_policy)
-        except Exception as e:
-            ir_obj = None
-            logger.info(f"IR generation failed gracefully: {e}")
+        # IR-first: execute planner and convert rows to results for answer + charts
+        ir_payload = self._run_ir_first(question, time_policy)
 
-        # Analyze and retrieve results using existing pipeline
+        # Analyze and retrieve results using existing pipeline (as complement/fallback)
         analysis = self._analyze_query(question)
         if not analysis.get('intent_confident', False):
             return {
@@ -1463,7 +1643,14 @@ class QuerySystem:
                 'show_chart': False,
                 'chart': None,
             }
-        results = self._enhanced_hybrid_search(question, analysis)
+        results: List[Dict[str, Any]] = []
+        if ir_payload and isinstance(ir_payload.get('rows'), list) and ir_payload['rows']:
+            results = self._results_from_ir_rows(ir_payload.get('ir') or {}, ir_payload['rows'])
+            # Complement with hybrid results if needed for richer context
+            if len(results) < max(3, int(self.config.query_processing.max_results_for_gpt * 0.2)):
+                results.extend(self._enhanced_hybrid_search(question, analysis))
+        else:
+            results = self._enhanced_hybrid_search(question, analysis)
         
         # Try deterministic answer first
         answer = self._try_sql_direct_answer(question, analysis, results)
@@ -1493,6 +1680,9 @@ class QuerySystem:
             'answer': answer,
             'show_chart': bool(want_chart),
             'chart': chart_payload,
+            'ir': (ir_payload or {}).get('ir') if ir_payload else None,
+            'ir_sql': (ir_payload or {}).get('sql') if ir_payload else None,
+            'ir_rows': (ir_payload or {}).get('rows') if ir_payload else None,
             'time_window': {
                 'start': time_policy.get('start'),
                 'end': time_policy.get('end'),
@@ -1549,16 +1739,18 @@ class QuerySystem:
                 getattr(self, '_last_answer_model', None),
             )
 
-        # Generate IR deterministically (low temp) and validate/repair once
-        try:
-            ir_obj, ir_meta = generate_ir_with_validation(self.openai_client, question, [], time_policy)
-        except Exception as e:
-            ir_obj = None
-            logger.info(f"IR generation failed gracefully: {e}")
+        # IR-first planner
+        ir_payload = self._run_ir_first(question, time_policy)
 
         # Search
         t = time.monotonic()
-        results = self._enhanced_hybrid_search(question, analysis)
+        results: List[Dict[str, Any]] = []
+        if ir_payload and isinstance(ir_payload.get('rows'), list) and ir_payload['rows']:
+            results = self._results_from_ir_rows(ir_payload.get('ir') or {}, ir_payload['rows'])
+            if len(results) < max(3, int(self.config.query_processing.max_results_for_gpt * 0.2)):
+                results.extend(self._enhanced_hybrid_search(question, analysis))
+        else:
+            results = self._enhanced_hybrid_search(question, analysis)
         timings['hybrid_search_ms'] = int((time.monotonic() - t) * 1000)
 
         # Try deterministic answer
@@ -1603,6 +1795,9 @@ class QuerySystem:
             'answer': answer,
             'show_chart': bool(want_chart),
             'chart': chart_payload,
+            'ir': (ir_payload or {}).get('ir') if ir_payload else None,
+            'ir_sql': (ir_payload or {}).get('sql') if ir_payload else None,
+            'ir_rows': (ir_payload or {}).get('rows') if ir_payload else None,
             'time_window': {
                 'start': time_policy.get('start'),
                 'end': time_policy.get('end'),

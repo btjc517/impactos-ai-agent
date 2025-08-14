@@ -21,23 +21,42 @@ os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 sys.path.append(os.path.join(os.path.dirname(__file__)))
 
 from schema import initialize_database, DatabaseSchema
+from config_engine import get_config_engine, get_config, ConfigScope
 
-# Setup logging
+# Initialize configuration engine
+config_engine = get_config_engine()
+
+# Setup logging with dynamic configuration
+log_level = get_config('logging.level', 'INFO')
+log_format = get_config('logging.format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=getattr(logging, log_level.upper()),
+    format=log_format
 )
 logger = logging.getLogger(__name__)
 
+# Log configuration status
+logger.info(f"ImpactOS AI Agent starting with dynamic configuration")
+
 
 class ImpactOSCLI:
-    """Main CLI interface for ImpactOS AI system."""
+    """Main CLI interface for ImpactOS AI system with dynamic configuration."""
     
     def __init__(self):
-        """Initialize CLI with database connection."""
-        self.db_path = os.getenv('IMPACTOS_DB_PATH', 'db/impactos.db')
+        """Initialize CLI with dynamic configuration."""
+        # Use dynamic configuration with environment variable override
+        env_db_path = os.getenv('IMPACTOS_DB_PATH')
+        self.db_path = env_db_path if env_db_path else get_config('system.database.path', 'db/impactos.db')
+        
         self.db_schema = DatabaseSchema(self.db_path)
         self.ensure_database_initialized()
+        
+        # Log configuration being used
+        logger.info(f"Using database: {self.db_path}")
+        logger.info(f"Fact discovery enabled: {get_config('system.processing.enable_fact_discovery', True)}")
+        logger.info(f"Flexible pipeline enabled: {get_config('system.processing.enable_flexible_pipeline', True)}")
+        logger.info(f"Default pipeline: {get_config('system.processing.default_pipeline', 'dynamic_processing')}")
     
     def ensure_database_initialized(self):
         """Ensure database is properly initialized."""

@@ -664,27 +664,8 @@ def get_openai_tools_spec() -> List[Dict[str, Any]]:
     ]
 
 
-def run_planner(client: OpenAI, *, question: str, time_policy: Dict[str, Any]) -> Dict[str, Any]:
-    """Minimal orchestration: tools-only flow -> IR -> SQL -> rows.
-
-    Returns dict: { ir, sql, params, rows, citations }
-    """
-    # Step 1: find metrics
-    snippets = find_metrics(question)
-    # Step 2: IR
-    ir = generate_ir(client, question=question, catalog_snippets=snippets, time_policy=time_policy)
-    # Step 3: SQL
-    sql, params = render_sql(ir)
-    # Step 4: execute via run_sql only
-    rows = run_sql(sql, params)
-    # Step 5: citations
-    citations = fetch_citations(ir=ir, rows=rows)
-    return {
-        'ir': ir,
-        'sql': sql,
-        'params': list(params),
-        'rows': rows,
-        'citations': citations,
-    }
+## Note: run_planner is defined above with Optional[OpenAI] client and returns
+## a payload including meta and privacy. The legacy duplicate definition below
+## has been removed to avoid overriding the correct implementation.
 
 

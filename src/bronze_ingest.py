@@ -346,7 +346,67 @@ def ingest_bronze(file_path: str, db_path: str = 'db/impactos.db', tenant_id: st
                              (tenant_id, source_file, sheet_name, content_hash))
                 rowid = cur2.fetchone()
                 sheet_id = rowid[0] if rowid else None
-                # Resolve specs
+                
+                # FLEXIBLE PIPELINE PROCESSING: Use dynamic pipeline instead of hardcoded transforms
+                use_flexible_pipeline = os.getenv('ENABLE_FLEXIBLE_PIPELINE', 'true').lower() in ('1','true','yes')
+                if use_flexible_pipeline:
+                    try:
+                        from flexible_pipeline import FlexiblePipelineEngine
+                        
+                        # Initialize pipeline engine
+                        pipeline_engine = FlexiblePipelineEngine(db_path=db_path)
+                        
+                        # Determine which pipeline to use
+                        pipeline_id = os.getenv('PROCESSING_PIPELINE', 'dynamic_processing')
+                        
+                        # Prepare initial data for pipeline
+                        initial_data = {
+                            'dataframe': df,
+                            'source_file': source_file,
+                            'sheet_name': sheet_name,
+                            'tenant_id': tenant_id,
+                            'bronze_table': bronze_table,
+                            'sheet_id': sheet_id,
+                            'content_hash': content_hash,
+                            'is_new_data': not exists
+                        }
+                        
+                        # Execute flexible pipeline
+                        run_id = pipeline_engine.execute_pipeline(pipeline_id, initial_data)
+                        print(f"🚀 Executed flexible pipeline '{pipeline_id}' for {sheet_name} (run: {run_id})")
+                        
+                        # Skip traditional processing since pipeline handles it
+                        continue
+                        
+                    except Exception as e:
+                        print(f"Warning: Flexible pipeline failed for {sheet_name}, falling back to traditional processing: {e}")
+                
+                # FALLBACK: Traditional processing with dynamic fact discovery
+                dynamic_fact_discovery = os.getenv('ENABLE_FACT_DISCOVERY', 'true').lower() in ('1','true','yes')
+                if dynamic_fact_discovery and not exists:  # Only discover on new data
+                    try:
+                        from spec_resolver import FactsConfig
+                        facts_config = FactsConfig(db_path=db_path)
+                        
+                        # Create source context for fact discovery
+                        source_context = {
+                            'source_file': source_file,
+                            'sheet_name': sheet_name,
+                            'tenant_id': tenant_id,
+                            'columns': list(df.columns),
+                            'row_count': len(df)
+                        }
+                        
+                        # Discover new facts from this sheet's data
+                        discovered_count = facts_config.discover_facts_from_data(df, source_context)
+                        
+                        if discovered_count > 0:
+                            print(f"🧠 Discovered {discovered_count} new fact patterns from {sheet_name}")
+                        
+                    except Exception as e:
+                        print(f"Warning: Fact discovery failed for {sheet_name}: {e}")
+                
+                # Resolve specs (traditional approach)
                 from spec_resolver import resolve_specs_for_sheet
                 # Provide bronze-aligned headers (slugified) to resolver so mappings match table columns
                 sheet_headers = [slugify(str(c)) for c in df.columns]
