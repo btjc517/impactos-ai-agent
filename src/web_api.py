@@ -71,6 +71,7 @@ class QueryRequest(BaseModel):
     question: str = Field(..., description="Natural language question about the data")
     show_accuracy: bool = Field(False, description="Include verification accuracy in response")
     force_chart: Optional[bool] = Field(None, description="Force chart rendering if possible")
+    timezone: Optional[str] = Field(None, description="Client timezone, e.g., Europe/Paris")
     # Optional identifiers passed from the web portal
     user_id: Optional[str] = Field(None, description="Authenticated user id from web portal auth")
     session_id: Optional[str] = Field(None, description="Client session id for grouping queries")
@@ -82,11 +83,15 @@ class QueryResponse(BaseModel):
     # New fields for frontend chart rendering
     show_chart: Optional[bool] = Field(False, description="Whether the frontend should render a chart for this answer")
     chart: Optional[Dict[str, Any]] = Field(None, description="Chart payload compatible with shadcn/Recharts: {type,x_key,series,data,config,meta}")
+    time_window: Optional[Dict[str, Any]] = Field(None, description="Resolved time window for the query")
 
 class IngestionRequest(BaseModel):
     file_path: str = Field(..., description="Path to file to ingest")
     file_type: Optional[str] = Field(None, description="File type override (auto-detected if not provided)")
     verify_after_ingestion: bool = Field(False, description="Run verification after ingestion")
+    bronze_only: bool = Field(False, description="Only create Bronze tables and sheet registry (no metric extraction)")
+    auto_transform: bool = Field(True, description="Enqueue Silver transforms when new sheet versions appear")
+    mode: Optional[str] = Field(None, description="Transform mode: sync|async (defaults to env)")
 
 class IngestionResponse(BaseModel):
     success: bool = Field(..., description="Whether ingestion was successful")
@@ -271,6 +276,9 @@ async def query_data_endpoint(request: QueryRequest):
         qs = QuerySystem(cli.db_path)
         started = time.monotonic()
         with capture_logs() as log_handler:
+            # Accept timezone override via request, else rely on env/default inside QuerySystem
+            if request.timezone:
+                os.environ['TIMEZONE'] = request.timezone
             structured, timings, model_used = qs.query_structured_instrumented(
                 request.question,
                 force_chart=request.force_chart,
@@ -286,7 +294,8 @@ async def query_data_endpoint(request: QueryRequest):
             answer=answer,
             accuracy_summary=accuracy_summary,
             show_chart=structured.get('show_chart', False),
-            chart=structured.get('chart')
+            chart=structured.get('chart'),
+            time_window=structured.get('time_window')
         )
         # Fire-and-forget telemetry (synchronous call with small timeout; non-blocking failure)
         try:
@@ -350,18 +359,24 @@ async def ingest_data_endpoint(request: IngestionRequest):
             raise HTTPException(status_code=404, detail=f"File not found: {request.file_path}")
         
         # Perform ingestion
-        success = cli.ingest_data(request.file_path, request.file_type)
+        if request.bronze_only:
+            from bronze_ingest import ingest_bronze
+            if request.auto_transform:
+                if request.mode:
+                    os.environ['TRANSFORM_MODE'] = request.mode
+                os.environ['AUTO_TRANSFORM'] = 'true'
+            res = ingest_bronze(request.file_path, cli.db_path)
+            success = True
+        else:
+            success = cli.ingest_data(request.file_path, request.file_type)
         
         # Run verification if requested
         verification_results = None
         if request.verify_after_ingestion and success:
             verification_results = verify_all_data(cli.db_path)
         
-        return IngestionResponse(
-            success=success,
-            message="File ingested successfully" if success else "Ingestion failed",
-            verification_results=verification_results
-        )
+        msg = "Bronze ingest completed" if request.bronze_only and success else ("File ingested successfully" if success else "Ingestion failed")
+        return IngestionResponse(success=success, message=msg, verification_results=verification_results)
         
     except HTTPException:
         raise

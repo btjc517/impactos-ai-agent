@@ -18,7 +18,7 @@ from pathlib import Path
 import logging
 
 # ML and AI imports
-from sentence_transformers import SentenceTransformer
+from embedding_registry import get_embedding_model
 import openai
 from openai import OpenAI
 from llm_utils import (
@@ -53,6 +53,7 @@ class QueryBasedExtraction:
         # Initialize AI components
         self.openai_client = self._initialize_openai()
         self.embedding_model = self._initialize_embedding_model()
+        self.enhanced_metadata: Optional[Dict[str, Any]] = None
     
     def _initialize_openai(self) -> Optional[OpenAI]:
         """Initialize OpenAI client with API key."""
@@ -69,17 +70,20 @@ class QueryBasedExtraction:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             return None
     
-    def _initialize_embedding_model(self) -> Optional[SentenceTransformer]:
-        """Initialize sentence transformer for embeddings."""
+    def _initialize_embedding_model(self) -> Optional["SentenceTransformer"]:
+        """Initialize or reuse shared sentence transformer for embeddings."""
         try:
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("Embedding model initialized successfully")
+            model = get_embedding_model()
+            if model is not None:
+                logger.info("Embedding model initialized (shared)")
+            else:
+                logger.error("Embedding model unavailable; embeddings disabled")
             return model
         except Exception as e:
             logger.error(f"Failed to initialize embedding model: {e}")
             return None
     
-    def extract_metrics_v2(self, file_path: str, source_id: int) -> List[Dict[str, Any]]:
+    def extract_metrics_v2(self, file_path: str, source_id: int, df: Optional[Any] = None, metadata: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """
         Extract metrics using the new query-based approach.
         
@@ -93,10 +97,25 @@ class QueryBasedExtraction:
         try:
             logger.info(f"Starting advanced extraction for {file_path}")
             
-            # Load the complete dataset
-            df = self._load_complete_dataset(file_path)
+            # Load the complete dataset only if not provided by caller
             if df is None:
-                return []
+                df = self._load_complete_dataset(file_path)
+                if df is None:
+                    return []
+            else:
+                # Convert Polars to pandas for downstream operations
+                if hasattr(df, 'to_pandas'):
+                    try:
+                        df = df.to_pandas()
+                    except Exception:
+                        df = pd.DataFrame(df)
+                # Capture enhanced loader metadata when provided
+                if metadata and isinstance(metadata, dict):
+                    self.enhanced_metadata = metadata
+                    # Prefer enhanced sheet name for citations
+                    sheet_name = metadata.get('sheet_name')
+                    if sheet_name:
+                        self.actual_sheet_name = sheet_name
             
             # Phase 1: Comprehensive Structure Analysis
             structure_analysis = self._analyze_structure(df, file_path)
@@ -111,6 +130,11 @@ class QueryBasedExtraction:
             if not extraction_queries:
                 logger.error("Query generation failed")
                 return []
+            # Keep latest structure analysis for downstream grounding during execution
+            try:
+                self._last_structure_analysis = structure_analysis
+            except Exception:
+                pass
             
             # Phase 3: Execute Queries with Perfect Citations
             metrics = self._execute_queries(df, extraction_queries, source_id, file_path)
@@ -140,6 +164,11 @@ class QueryBasedExtraction:
                 logger.error(f"Unsupported file type: {file_ext}")
                 return None
             
+            # Heuristic header repair: if headers look like 0..N but first row is strings, promote first row to header
+            try:
+                df = self._repair_headers(df)
+            except Exception:
+                pass
             logger.info(f"Loaded complete dataset: {len(df)} rows, {len(df.columns)} columns")
             return df
             
@@ -174,12 +203,15 @@ class QueryBasedExtraction:
             Rows: {len(df)}
             Columns: {len(df.columns)}
 
-            DETAILED STRUCTURE:
+            DETAILED STRUCTURE (GROUND TRUTH):
             {structure_info}
 
-            ANALYSIS REQUIREMENTS:
-            Analyze this data structure and return a JSON object with:
+            IMPORTANT CONSTRAINTS:
+            - Use ONLY the exact column names that appear in COLUMN DETAILS above.
+            - Do NOT invent new columns or rename columns.
+            - If a metric is identified, its target_column MUST be one of the actual columns.
 
+            ANALYSIS OUTPUT FORMAT (JSON object):
             {{
                 "data_overview": {{
                     "total_rows": {len(df)},
@@ -189,27 +221,27 @@ class QueryBasedExtraction:
                 }},
                 "column_analysis": [
                     {{
-                        "column_name": "Volunteer Hours",
-                        "column_index": 2,
-                        "data_type": "numeric",
-                        "social_value_category": "community_engagement",
-                        "contains_metrics": true,
-                        "value_range": [0, 100],
-                        "unit": "hours",
-                        "completeness": 0.95,
-                        "sample_values": [12.5, 8.0, 15.0],
-                        "aggregation_suitable": true,
+                        "column_name": "<one of the actual columns>",
+                        "column_index": <zero_based_index>,
+                        "data_type": "<pandas dtype or semantic type>",
+                        "social_value_category": "<if applicable>",
+                        "contains_metrics": <true|false>,
+                        "value_range": [min, max],
+                        "unit": "<unit if known>",
+                        "completeness": <0..1>,
+                        "sample_values": [..],
+                        "aggregation_suitable": <true|false>,
                         "aggregation_methods": ["sum", "average", "count"]
                     }}
                 ],
                 "identified_metrics": [
                     {{
-                        "metric_name": "total_volunteer_hours",
-                        "metric_category": "community_engagement",
-                        "extraction_method": "column_sum",
-                        "target_column": "Volunteer Hours",
+                        "metric_name": "<e.g., total_volunteer_hours>",
+                        "metric_category": "<category>",
+                        "extraction_method": "column_sum|column_average|column_count",
+                        "target_column": "<exact existing column name>",
                         "confidence": 0.95,
-                        "expected_unit": "hours"
+                        "expected_unit": "<unit>"
                     }}
                 ],
                 "data_relationships": [
@@ -236,7 +268,7 @@ class QueryBasedExtraction:
             4. Assess data quality and completeness
             5. Suggest extraction strategies for each metric
 
-            Return ONLY valid JSON. Be thorough and precise.
+            Return ONLY valid JSON. Be precise and grounded to actual columns.
             """
 
             from config import get_config
@@ -307,8 +339,10 @@ class QueryBasedExtraction:
                         raise json.JSONDecodeError("no JSON object found", cleaned_response, 0)
                 ok, errors = validate_structure_analysis(structure_analysis)
                 if ok:
-                    logger.info(f"Structure analysis completed: {len(structure_analysis.get('identified_metrics', []))} metrics identified")
-                    return structure_analysis
+                    # Ground the structure analysis to actual DataFrame columns
+                    grounded = self._ground_structure_analysis(df, structure_analysis)
+                    logger.info(f"Structure analysis completed: {len(grounded.get('identified_metrics', []))} metrics identified")
+                    return grounded
                 else:
                     logger.error(f"Structure analysis validation failed: {errors}")
                     return None
@@ -500,7 +534,7 @@ class QueryBasedExtraction:
                     {
                         'model': params.get('model'),
                         'max_tokens': params.get('max_tokens'),
-                        'enforce_json': True,
+                        'enforce_json': False,
                         'reasoning_effort': (params.get('reasoning') or {}).get('effort'),
                         'text_verbosity': 'low',
                         'messages_count': 1,
@@ -508,14 +542,15 @@ class QueryBasedExtraction:
                 )
             except Exception:
                 pass
+            # Do not force JSON object here because we expect a top-level JSON array
             result_text, meta = call_chat_completion(
                 self.openai_client,
                 messages=[{"role": "user", "content": prompt}],
                 model=params['model'],
                 max_tokens=params['max_tokens'],
                 reasoning=params.get('reasoning'),
-                text={'verbosity': 'low', 'format': {'type': 'json_object'}},
-                enforce_json=True,
+                text={'verbosity': 'low'},
+                enforce_json=False,
             )
             
             try:
@@ -527,8 +562,13 @@ class QueryBasedExtraction:
                     cleaned_response = cleaned_response.split('```')[0]
                 cleaned_response = cleaned_response.strip()
                 
-                extraction_queries = json.loads(cleaned_response)
-                
+                parsed = json.loads(cleaned_response)
+                # Accept either a raw array or an object with a 'queries' array
+                if isinstance(parsed, dict):
+                    extraction_queries = parsed.get('queries') or parsed.get('items') or parsed.get('data')
+                else:
+                    extraction_queries = parsed
+
                 if isinstance(extraction_queries, list):
                     logger.info(f"Generated {len(extraction_queries)} extraction queries")
                     return extraction_queries
@@ -609,14 +649,76 @@ class QueryBasedExtraction:
                 try:
                     # Execute the pandas query safely
                     pandas_query = query['pandas_query']
+
+                    # Resolve target column to actual DataFrame column name (case-insensitive/fuzzy)
+                    target_column = query.get('target_column')
+                    if target_column:
+                        resolved_col = self._resolve_column_name(
+                            df,
+                            target_column,
+                            metric_category=query.get('metric_category')
+                        )
+                        if not resolved_col:
+                            logger.warning(
+                                f"Target column not found; skipping query '{query.get('metric_name')}': {target_column} | available={list(df.columns)}"
+                            )
+                            continue
+                        if resolved_col != target_column:
+                            # Update query fields and pandas expression to use the resolved column
+                            try:
+                                pandas_query = pandas_query.replace(f"df['{target_column}']", f"df['{resolved_col}']")
+                            except Exception:
+                                # If replacement fails for any reason, skip to avoid unsafe eval
+                                logger.warning(f"Could not rewrite query for resolved column; skipping '{query.get('metric_name')}'")
+                                continue
+                            query['target_column'] = resolved_col
+                            try:
+                                query['target_column_index'] = int(list(df.columns).index(resolved_col))
+                            except Exception:
+                                pass
                     
-                    # Basic safety check
-                    if not self._is_safe_query(pandas_query):
-                        logger.warning(f"Unsafe query skipped: {pandas_query}")
-                        continue
-                    
-                    # Execute query
-                    result = eval(pandas_query)
+                    # Prefer direct execution based on extraction_method to avoid fragile eval
+                    method = (query.get('extraction_method') or '').lower()
+                    direct_methods = {'column_sum', 'column_average', 'column_count'}
+                    if resolved_col is not None and method in direct_methods:
+                        try:
+                            series = df[resolved_col]
+                        except Exception:
+                            # If resolved_col is string but df uses int labels or vice versa, try conversion
+                            try:
+                                alt = int(resolved_col) if isinstance(resolved_col, str) and str(resolved_col).isdigit() else str(resolved_col)
+                                series = df[alt]
+                            except Exception as _:
+                                raise
+                        # Coerce to numeric when appropriate
+                        if method in {'column_sum', 'column_average'} and not pd.api.types.is_numeric_dtype(series):
+                            series = pd.to_numeric(series, errors='coerce')
+                        if method == 'column_sum':
+                            result = series.sum(skipna=True)
+                        elif method == 'column_average':
+                            result = series.mean(skipna=True)
+                        else:
+                            result = series.count()
+                    else:
+                        # Basic safety check
+                        if not self._is_safe_query(pandas_query):
+                            logger.warning(f"Unsafe query skipped: {pandas_query}")
+                            continue
+                        # Attempt to rewrite expression to handle int columns
+                        if target_column and resolved_col is not None:
+                            try:
+                                if isinstance(resolved_col, int):
+                                    for pattern in (f"df['{target_column}']", f'df["{target_column}"]'):
+                                        if pattern in pandas_query:
+                                            pandas_query = pandas_query.replace(pattern, f"df[{resolved_col}]")
+                                else:
+                                    for pattern in (f"df['{target_column}']", f'df["{target_column}"]'):
+                                        if pattern in pandas_query:
+                                            pandas_query = pandas_query.replace(pattern, f"df['{resolved_col}']")
+                            except Exception:
+                                pass
+                        # Execute query
+                        result = eval(pandas_query)
                     
                     # Handle different result types
                     if pd.isna(result):
@@ -665,6 +767,166 @@ class QueryBasedExtraction:
         except Exception as e:
             logger.error(f"Error executing queries: {e}")
             return []
+
+    def _repair_headers(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Promote first row to header if columns are default indices and row 0 looks like header.
+
+        Heuristic triggers when columns are Int/RangeIndex and the first row contains mostly strings and unique values.
+        """
+        try:
+            cols = list(df.columns)
+            # If columns are already strings and not generic, skip
+            if any(isinstance(c, str) for c in cols) and not all(isinstance(c, int) for c in cols):
+                return df
+            # Examine first row
+            if len(df) == 0:
+                return df
+            first_row = df.iloc[0]
+            values = [v for v in first_row.tolist() if pd.notna(v)]
+            if not values:
+                return df
+            str_values = [str(v).strip() for v in values if isinstance(v, str) or (not isinstance(v, (int, float)) and str(v).strip())]
+            unique_ratio = len(set(str_values)) / max(1, len(str_values)) if str_values else 0.0
+            # Heuristic: at least half are non-empty strings and mostly unique
+            if str_values and len(str_values) >= max(2, int(0.5 * len(cols))) and unique_ratio >= 0.8:
+                new_cols = []
+                seen = set()
+                for v in first_row.tolist():
+                    name = str(v).strip() if pd.notna(v) else ""
+                    # Ensure non-empty, unique names
+                    if not name:
+                        name = "Column"
+                    base = name
+                    suffix = 1
+                    while name in seen:
+                        suffix += 1
+                        name = f"{base}_{suffix}"
+                    seen.add(name)
+                    new_cols.append(name)
+                df2 = df.iloc[1:].copy()
+                df2.columns = new_cols
+                return df2
+            return df
+        except Exception:
+            return df
+
+    def _ground_structure_analysis(self, df: pd.DataFrame, analysis: Dict[str, Any]) -> Dict[str, Any]:
+        """Ensure identified metrics reference real columns and fix indexes.
+
+        - Rewrites target_column to resolved DataFrame column if possible
+        - Attaches/repairs target_column_index where missing or incorrect
+        - Drops metrics whose columns cannot be resolved
+        - Normalizes column_analysis entries' column_index to match df
+        """
+        try:
+            grounded = dict(analysis)
+            cols = list(df.columns)
+            # Normalize column_analysis indices
+            ca = []
+            for item in grounded.get('column_analysis', []) or []:
+                name = item.get('column_name')
+                resolved = self._resolve_column_name(df, name) if name else None
+                if resolved:
+                    item = dict(item)
+                    item['column_name'] = resolved
+                    try:
+                        item['column_index'] = int(cols.index(resolved))
+                    except Exception:
+                        pass
+                    ca.append(item)
+            grounded['column_analysis'] = ca
+
+            # Filter/repair identified_metrics
+            fixed_metrics = []
+            for m in grounded.get('identified_metrics', []) or []:
+                tgt = m.get('target_column')
+                if not tgt:
+                    continue
+                resolved = self._resolve_column_name(df, tgt)
+                if not resolved:
+                    continue
+                m2 = dict(m)
+                m2['target_column'] = resolved
+                try:
+                    m2['target_column_index'] = int(cols.index(resolved))
+                except Exception:
+                    pass
+                fixed_metrics.append(m2)
+            grounded['identified_metrics'] = fixed_metrics
+            return grounded
+        except Exception:
+            return analysis
+
+    def _resolve_column_name(self, df: pd.DataFrame, requested_name: Optional[str], metric_category: Optional[str] = None) -> Optional[str]:
+        """Resolve a requested column name to an existing DataFrame column.
+
+        Tries exact match, case-insensitive match, normalized match (strip non-alnum),
+        then substring containment. Returns None if no reasonable match.
+        """
+        try:
+            if not requested_name:
+                return None
+            # Exact match
+            if requested_name in df.columns:
+                return requested_name
+            # Case-insensitive exact
+            lower_map = {str(c).lower(): c for c in df.columns}
+            key = str(requested_name).lower()
+            if key in lower_map:
+                return lower_map[key]
+            # Normalized match
+            import re as _re
+            def _norm(s: str) -> str:
+                return _re.sub(r"[^a-z0-9]+", "", str(s).lower())
+            requested_norm = _norm(requested_name)
+            for c in df.columns:
+                if _norm(c) == requested_norm and requested_norm:
+                    return c
+            # Substring containment heuristic
+            for c in df.columns:
+                if requested_norm and requested_norm in _norm(c):
+                    return c
+            # Fuzzy match via difflib
+            try:
+                import difflib as _difflib
+                close = _difflib.get_close_matches(str(requested_name), [str(c) for c in df.columns], n=1, cutoff=0.6)
+                if close:
+                    # Return the original c with exact casing
+                    for c in df.columns:
+                        if str(c) == close[0]:
+                            return c
+            except Exception:
+                pass
+            # Use structure analysis signals by category if available
+            try:
+                analysis = getattr(self, '_last_structure_analysis', None)
+                if analysis and metric_category:
+                    candidates: List[str] = []
+                    for item in analysis.get('column_analysis', []) or []:
+                        if not isinstance(item, dict):
+                            continue
+                        if str(item.get('social_value_category', '')).lower() == str(metric_category).lower() and item.get('contains_metrics'):
+                            name = item.get('column_name')
+                            if name and name in df.columns and name not in candidates:
+                                candidates.append(name)
+                    # If a single candidate, use it; otherwise choose best fuzzy match to requested_name
+                    if candidates:
+                        if len(candidates) == 1:
+                            return candidates[0]
+                        try:
+                            import difflib as _difflib2
+                            best = _difflib2.get_close_matches(str(requested_name), [str(c) for c in candidates], n=1, cutoff=0.0)
+                            if best:
+                                for c in candidates:
+                                    if str(c) == best[0]:
+                                        return c
+                        except Exception:
+                            return candidates[0]
+            except Exception:
+                pass
+            return None
+        except Exception:
+            return None
     
     def _is_safe_query(self, query: str) -> bool:
         """Check if a pandas query is safe to execute."""
@@ -684,18 +946,40 @@ class QueryBasedExtraction:
             column_index = query.get('target_column_index')
             extraction_method = query.get('extraction_method', 'column_sum')
             
-            # Determine exact cells used
-            if extraction_method in ['column_sum', 'column_average', 'column_count']:
-                # Used entire column (non-null values)
-                non_null_count = df[target_column].count() if target_column else 0
-                start_row = 1  # First data row (0 is header)
-                end_row = len(df)
-                
-                # Excel-style cell references
-                col_letter = self._index_to_excel_column(column_index) if column_index is not None else 'A'
-                cell_reference = f"{col_letter}{start_row+1}:{col_letter}{end_row}"
-                
-                # Formula based on method
+            # Determine exact cells used; prefer enhanced loader cell references if available
+            metadata = getattr(self, 'enhanced_metadata', None)
+            cell_reference = ''
+            formula = None
+            if (
+                metadata and isinstance(metadata, dict) and
+                target_column and
+                isinstance(metadata.get('cell_references'), dict) and
+                target_column in metadata['cell_references'] and
+                metadata['cell_references'][target_column]
+            ):
+                refs = metadata['cell_references'][target_column]
+                # refs is a list of CellReference objects for data rows
+                first_ref = refs[0]
+                last_ref = refs[-1]
+                try:
+                    # Build A2:A{N} style range from first/last
+                    first_addr = getattr(first_ref, 'excel_address', None) or ''
+                    last_addr = getattr(last_ref, 'excel_address', None) or ''
+                    # Extract column letters and row numbers
+                    def _split(addr: str):
+                        if not addr:
+                            return 'A', 1
+                        letters = ''.join([ch for ch in addr if ch.isalpha()]) or 'A'
+                        digits = ''.join([ch for ch in addr if ch.isdigit()]) or '1'
+                        return letters, int(digits)
+                    col_letters, start_row = _split(first_addr)
+                    _, end_row = _split(last_addr)
+                    cell_reference = f"{col_letters}{start_row}:{col_letters}{end_row}"
+                except Exception:
+                    # Fallback to index-based range
+                    col_letter = self._index_to_excel_column(column_index) if column_index is not None else 'A'
+                    cell_reference = f"{col_letter}2:{col_letter}{len(df)+1}"
+
                 if extraction_method == 'column_sum':
                     formula = f"SUM({cell_reference})"
                 elif extraction_method == 'column_average':
@@ -704,15 +988,38 @@ class QueryBasedExtraction:
                     formula = f"COUNT({cell_reference})"
                 else:
                     formula = f"AGGREGATE({cell_reference})"
-                
             else:
-                # Single cell or specific range
-                col_letter = self._index_to_excel_column(column_index) if column_index is not None else 'A'
-                cell_reference = f"{col_letter}1"
-                formula = None
+                if extraction_method in ['column_sum', 'column_average', 'column_count']:
+                    # Used entire column (non-null values)
+                    start_row = 1  # First data row (0 is header)
+                    end_row = len(df)
+                    col_letter = self._index_to_excel_column(column_index) if column_index is not None else 'A'
+                    cell_reference = f"{col_letter}{start_row+1}:{col_letter}{end_row}"
+                    if extraction_method == 'column_sum':
+                        formula = f"SUM({cell_reference})"
+                    elif extraction_method == 'column_average':
+                        formula = f"AVERAGE({cell_reference})"
+                    elif extraction_method == 'column_count':
+                        formula = f"COUNT({cell_reference})"
+                    else:
+                        formula = f"AGGREGATE({cell_reference})"
+                else:
+                    # Single cell or specific range
+                    col_letter = self._index_to_excel_column(column_index) if column_index is not None else 'A'
+                    cell_reference = f"{col_letter}1"
+                    formula = None
+                
             
+            
+            # Prefer enhanced sheet name if present
+            sheet_name = None
+            try:
+                if isinstance(metadata, dict):
+                    sheet_name = metadata.get('sheet_name')
+            except Exception:
+                sheet_name = None
             return {
-                'sheet_name': getattr(self, 'actual_sheet_name', Path(file_path).stem),
+                'sheet_name': sheet_name or getattr(self, 'actual_sheet_name', Path(file_path).stem),
                 'column_name': target_column or '',
                 'column_index': column_index,
                 'row_index': None,  # Multiple rows for aggregations

@@ -162,13 +162,19 @@ class DataVerifier:
                     metric_id, False, 0.0, f"Source file not found: {filename}"
                 )
             
-            # Verify based on file type
-            if file_type in ['xlsx', 'csv']:
+            # Resolve file type semantically
+            try:
+                from semantic_resolver import SemanticResolver
+                res = SemanticResolver().resolve_file_type(filename, explicit_hint=file_type)
+                key = res.get('key') if res.get('outcome') == 'accepted' else None
+            except Exception:
+                key = None
+
+            if key in ['excel', 'csv']:
                 return self._verify_spreadsheet_metric(metric, file_path)
-            else:
-                return self._create_verification_result(
-                    metric_id, False, 0.0, f"Unsupported file type: {file_type}"
-                )
+            return self._create_verification_result(
+                metric_id, False, 0.0, f"Unsupported file type: {file_type}"
+            )
                 
         except Exception as e:
             logger.error(f"Error verifying metric {metric['id']}: {e}")
@@ -249,8 +255,10 @@ class DataVerifier:
                 # Extract the range of values
                 if start_col == end_col:  # Single column range
                     column_name = df.columns[start_col]
-                    # Get the range of rows (convert to 0-based indexing)
-                    range_values = df.iloc[start_row-1:end_row, start_col]
+                    # Map Excel rows to pandas indices: pandas uses header row as column names
+                    start_idx = max(0, start_row - 1)
+                    end_exclusive = max(0, end_row)  # iloc end is exclusive; end_row already 0-based
+                    range_values = df.iloc[start_idx:end_exclusive, start_col]
                     
                     # Check if this matches expected aggregation
                     source_formula = metric.get('source_formula', '')
@@ -283,14 +291,15 @@ class DataVerifier:
                 # Single cell reference
                 col_idx, row_idx = self._parse_cell_reference(cell_ref)
                 
-                if col_idx >= len(df.columns) or row_idx >= len(df):
+                df_row = max(0, row_idx - 1)  # shift by one to account for header row consumed as column names
+                if col_idx >= len(df.columns) or df_row >= len(df):
                     return self._create_verification_result(
                         metric['id'], False, 0.0,
                         f"Cell reference {cell_ref} is out of bounds"
                     )
                 
                 # Get the actual value
-                actual_value = df.iloc[row_idx, col_idx]
+                actual_value = df.iloc[df_row, col_idx]
                 actual_numeric = self._extract_numeric_value(str(actual_value))
                 
                 reported_value = float(metric['metric_value'])

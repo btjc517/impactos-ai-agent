@@ -26,10 +26,10 @@ class MetricsCollector:
         self.reset_metrics()
         self.process = psutil.Process(os.getpid())
         
-        # GPT pricing (per 1K tokens)
+        # GPT pricing (per 1K tokens) — approximate; adjust as needed
         self.gpt_pricing = {
-            'gpt-5': {'input': 0.03, 'output': 0.06},
-            'gpt-5-mini': {'input': 0.01, 'output': 0.03},
+            'gpt-4o': {'input': 0.005, 'output': 0.015},
+            'gpt-4o-mini': {'input': 0.003, 'output': 0.006},
             'gpt-3.5-turbo': {'input': 0.001, 'output': 0.002}
         }
     

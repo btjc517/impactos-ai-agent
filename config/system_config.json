@@ -20,8 +20,8 @@
     "descriptive_result_limit": 100,
     "analytical_result_limit": 75,
     "answer_max_tokens": 2000,
-    "answer_temperature": null,
-    "answer_model": "gpt-5-mini",
+    "answer_temperature": 0.0,
+    "answer_model": "gpt-4o-mini",
     "enable_intelligent_filtering": true,
     "duplicate_detection": true,
     "enable_result_caching": true,
@@ -31,9 +31,9 @@
     "aggregation_ctx_max_vector": 5
   },
   "extraction": {
-    "extraction_max_tokens": 40000,
-    "structure_analysis_max_tokens": 30000,
-    "verification_max_tokens": 25000,
+    "extraction_max_tokens": 8000,
+    "structure_analysis_max_tokens": 6000,
+    "verification_max_tokens": 6000,
     "confidence_threshold": 0.7,
     "verification_tolerance": 0.02,
     "max_rows_per_batch": 1000,
@@ -50,6 +50,27 @@
     "faiss_metric_type": "METRIC_INNER_PRODUCT",
     "embedding_batch_size": 50,
     "metric_processing_batch_size": 100
+  },
+  "spec_resolution": {
+    "tau_fact": 0.7,
+    "max_facts_per_sheet": 3,
+    "role_scoring_weights": {
+      "w_graph": 0.1,
+      "w_type": 0.4,
+      "w_unit": 0.4,
+      "w_history": 0.1
+    },
+    "role_thresholds": {
+      "default": 0.5,
+      "value": 0.5,
+      "date": 0.5
+    },
+    "date_likeness_threshold": 0.5,
+    "numeric_convertible_threshold": 0.6,
+    "enable_llm_assistance": true,
+    "llm_model": "gpt-4o-mini",
+    "llm_temperature": 0.0,
+    "llm_max_tokens": 1500
   },
   "analysis": {
     "category_keywords": {
@@ -73,7 +94,7 @@
     "aggregation_min_similarity": 0.30,
     "framework_mapping_min_similarity": 0.35,
     "use_llm_for_intent": true,
-    "llm_intent_model": "gpt-5-nano",
+    "llm_intent_model": "gpt-4o-mini",
     "llm_intent_temperature": 0.0,
     "llm_intent_max_tokens": 10000
   }

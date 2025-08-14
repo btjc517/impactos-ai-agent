@@ -53,10 +53,10 @@ class QueryProcessingConfig:
     
     # LLM answer synthesis defaults (neutral names; old gpt4_* accepted via aliases)
     answer_max_tokens: int = 2000
-    # Temperature removed for GPT-5-only usage; retained for legacy parsing only
-    # answer_temperature is deprecated
-    answer_temperature: Optional[float] = None
-    answer_model: str = "gpt-5-mini"
+    # Temperature for GPT-4 family (default deterministic)
+    answer_temperature: Optional[float] = 0.0
+    # Default to GPT-4 family for faster responses
+    answer_model: str = "gpt-4o-mini"
     
     # Result filtering
     enable_intelligent_filtering: bool = True
@@ -85,8 +85,9 @@ class ExtractionConfig:
     # verification_max_tokens: int = 2500
     
     # Ingestion models (run infrequently)
-    structure_analysis_model: str = "gpt-5"
-    query_generation_model: str = "gpt-5"
+    # Use GPT-4 family by default for extraction-related tasks
+    structure_analysis_model: str = "gpt-4o-mini"
+    query_generation_model: str = "gpt-4o-mini"
     
     # Extraction accuracy
     confidence_threshold: float = 0.7  # Minimum confidence for acceptance
@@ -138,7 +139,8 @@ class AnalysisConfig:
     use_embedding_for_framework_mapping: bool = True
     # Optional: use LLM for intent classification
     use_llm_for_intent: bool = False
-    llm_intent_model: str = "gpt-5-nano"
+    # Default to GPT-4 family for intent classification
+    llm_intent_model: str = "gpt-4o-mini"
     llm_intent_temperature: float = 0.0
     # Increased to allow richer extraction when needed
     llm_intent_max_tokens: int = 10000

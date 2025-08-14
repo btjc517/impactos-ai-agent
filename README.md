@@ -14,6 +14,7 @@ ImpactOS AI Agent is a sophisticated Python-based system designed to handle the 
 - **Natural Language Q&A**: Query your data using natural language with cited, accurate responses
 - **Comprehensive Testing**: Production-ready testing infrastructure with performance tracking
 - **Extensible Architecture**: Modular design supporting iterative feature development
+- **Medallion Data Model**: Bronze → Silver → Gold with lineage for deterministic analytics
 
 ## Technologies Used
 
@@ -100,6 +101,13 @@ python test_runner.py --quick
 python test_runner.py --types performance
 ```
 
+#### Medallion Seed (optional)
+```bash
+export IMPACTOS_DB_PATH=db/impactos.db
+python src/seed_medallion.py
+```
+See `README_MEDALLION.md` for details on lineage and schema.
+
 ## Project Structure
 
 ```
@@ -141,7 +149,7 @@ The system uses JSON-based configuration files for flexible behavior control:
     "vector_index_path": "db/faiss_index"
   },
   "ai": {
-    "model": "gpt-5",
+    "model": "gpt-4o-mini",
     "embedding_model": "all-MiniLM-L6-v2",
     "confidence_threshold": 0.7
   },

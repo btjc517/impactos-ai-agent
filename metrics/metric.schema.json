@@ -1,0 +1,379 @@
+{
+  "$defs": {
+    "ChartDefaults": {
+      "properties": {
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        },
+        "x": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "X"
+        },
+        "y": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Y"
+        },
+        "series_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Series Key"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        },
+        "legend": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Legend"
+        },
+        "caption": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Caption"
+        }
+      },
+      "title": "ChartDefaults",
+      "type": "object"
+    },
+    "FrameworkMapping": {
+      "properties": {
+        "svm": {
+          "description": "UK Social Value Model categories/codes",
+          "items": {
+            "type": "string"
+          },
+          "title": "Svm",
+          "type": "array"
+        },
+        "mac": {
+          "description": "MAC (alias of UK SVM) categories/codes",
+          "items": {
+            "type": "string"
+          },
+          "title": "Mac",
+          "type": "array"
+        },
+        "tom": {
+          "description": "TOMs categories/codes",
+          "items": {
+            "type": "string"
+          },
+          "title": "Tom",
+          "type": "array"
+        },
+        "sdg": {
+          "description": "UN SDG goal IDs or target codes",
+          "items": {
+            "type": "string"
+          },
+          "title": "Sdg",
+          "type": "array"
+        }
+      },
+      "title": "FrameworkMapping",
+      "type": "object"
+    },
+    "PrivacyThresholds": {
+      "properties": {
+        "min_group_size": {
+          "description": "Minimum group size for k-anonymity style protections (>= 0)",
+          "minimum": 0,
+          "title": "Min Group Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "min_group_size"
+      ],
+      "title": "PrivacyThresholds",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "id": {
+      "description": "Stable metric identifier (slug)",
+      "title": "Id",
+      "type": "string"
+    },
+    "title": {
+      "description": "Human-friendly title",
+      "title": "Title",
+      "type": "string"
+    },
+    "unit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Unit label, e.g., hours, GBP, kgCO2e",
+      "title": "Unit"
+    },
+    "measure_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Type of measure, e.g., count, amount, ratio, percentage, score",
+      "title": "Measure Type"
+    },
+    "default_agg": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Default aggregation, e.g., sum, avg, count, max, min",
+      "title": "Default Agg"
+    },
+    "directionality": {
+      "anyOf": [
+        {
+          "enum": [
+            "increase",
+            "decrease",
+            "neutral"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": "neutral",
+      "description": "Whether higher values are better (increase), worse (decrease), or neutral",
+      "title": "Directionality"
+    },
+    "denominator_metric_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Metric id used as denominator when measure_type is ratio/percentage",
+      "title": "Denominator Metric Id"
+    },
+    "allowed_dimensions": {
+      "description": "Supported dimension names, e.g., site, department, region",
+      "items": {
+        "type": "string"
+      },
+      "title": "Allowed Dimensions",
+      "type": "array"
+    },
+    "time_grain_supported": {
+      "description": "Supported time grains, e.g., day, week, month, quarter, year",
+      "items": {
+        "type": "string"
+      },
+      "title": "Time Grain Supported",
+      "type": "array"
+    },
+    "default_time_window": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Default time window, e.g., 12M, YTD, rolling_12m",
+      "title": "Default Time Window"
+    },
+    "fiscal_required": {
+      "default": false,
+      "description": "Whether a fiscal calendar is required for correct evaluation",
+      "title": "Fiscal Required",
+      "type": "boolean"
+    },
+    "calc_sql": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "SQL expression or query used to compute the metric (when applicable)",
+      "title": "Calc Sql"
+    },
+    "dsl": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Domain-specific expression describing the metric logic (alternative to calc_sql)",
+      "title": "Dsl"
+    },
+    "validations": {
+      "description": "Validation rules (free-form objects or strings)",
+      "items": {},
+      "title": "Validations",
+      "type": "array"
+    },
+    "privacy_thresholds": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PrivacyThresholds"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Privacy thresholds such as minimum group size"
+    },
+    "chart_defaults": {
+      "$ref": "#/$defs/ChartDefaults",
+      "description": "Default charting hints (v2 payload)"
+    },
+    "synonyms": {
+      "description": "Synonyms or aliases for discovery",
+      "items": {
+        "type": "string"
+      },
+      "title": "Synonyms",
+      "type": "array"
+    },
+    "example_questions": {
+      "description": "Example NL questions demonstrating usage",
+      "items": {
+        "type": "string"
+      },
+      "title": "Example Questions",
+      "type": "array"
+    },
+    "dimension_compat": {
+      "additionalProperties": true,
+      "description": "Optional matrix to block incompatible dimension combinations",
+      "title": "Dimension Compat",
+      "type": "object"
+    },
+    "framework_mapping": {
+      "$ref": "#/$defs/FrameworkMapping",
+      "description": "Mappings into common reporting frameworks"
+    },
+    "mapping_version": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Version string for mapping provenance",
+      "title": "Mapping Version"
+    },
+    "evidence": {
+      "description": "Evidence or citation links supporting the metric definition",
+      "items": {
+        "type": "string"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "created_at": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Creation timestamp (ISO 8601); set by tooling if omitted",
+      "title": "Created At"
+    }
+  },
+  "required": [
+    "id",
+    "title"
+  ],
+  "title": "ImpactOS Metric Definition",
+  "type": "object",
+  "description": "Schema for metric YAML files used by the ImpactOS metric registry"
+}

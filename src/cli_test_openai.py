@@ -1,8 +1,8 @@
 """
-Small CLI to test GPT-5 Responses API and print response structure.
+Small CLI to test OpenAI Responses/Chat API and print response structure.
 
 Usage:
-  python3 src/cli_test_openai.py --prompt "Hello" --model gpt-5-mini
+  python3 src/cli_test_openai.py --prompt "Hello" --model gpt-4o-mini
 
 Requires environment variable OPENAI_API_KEY to be set.
 """
@@ -58,7 +58,7 @@ def extract_output_text(resp: Any) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Test GPT-5 Responses API")
+    parser = argparse.ArgumentParser(description="Test OpenAI Responses/Chat API")
     parser.add_argument(
         "--prompt",
         required=False,
@@ -68,8 +68,8 @@ def main() -> int:
     parser.add_argument(
         "--model",
         required=False,
-        default="gpt-5-mini",
-        help="Model name (e.g., gpt-5-mini, gpt-5)",
+        default="gpt-4o-mini",
+        help="Model name (e.g., gpt-4o-mini, gpt-4o)",
     )
     parser.add_argument(
         "--max-output-tokens",

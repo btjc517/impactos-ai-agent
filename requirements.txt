@@ -66,5 +66,7 @@ polars==1.6.0
 fastapi==0.115.6
 uvicorn[standard]==0.32.1
 python-multipart==0.0.20
+# Semantic resolver deps
+rapidfuzz==3.11.0
 # pyarrow is optional and not required for our ingestion paths; removing to avoid
 # heavy Arrow build on hosts without Arrow dev libs (e.g., Render Python 3.13)

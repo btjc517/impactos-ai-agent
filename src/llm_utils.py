@@ -23,6 +23,65 @@ from config import get_config
 logger = logging.getLogger(__name__)
 
 
+def get_llm_client():
+    """Get configured OpenAI client."""
+    try:
+        import openai
+        return openai.OpenAI()
+    except ImportError:
+        logger.error("OpenAI package not available")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to initialize OpenAI client: {e}")
+        raise
+
+
+# Safe ceilings for output/completion tokens per model.
+# These values include headroom below hard limits to avoid 400s.
+MODEL_OUTPUT_TOKEN_CEILINGS: Dict[str, int] = {
+    # GPT-4o family
+    'gpt-4o-mini': 12000,           # hard ~16384; clamp with headroom
+    'gpt-4o-mini-2024-07-18': 12000,
+    'gpt-4o': 8000,
+    'gpt-4o-2024-08-06': 8000,
+    # GPT-5 family (conservative defaults; can be tuned via config in future)
+    'gpt-5': 6000,
+    'gpt-5-mini': 6000,
+}
+
+
+def _get_model_ceiling(model: str, requested: int) -> int:
+    """Return a safe ceiling for the given model, defaulting to requested.
+
+    Uses prefix matching so aliases like 'gpt-4o-mini-...'
+    resolve to the appropriate ceiling.
+    """
+    if not model:
+        return requested
+    # Exact match first
+    if model in MODEL_OUTPUT_TOKEN_CEILINGS:
+        return MODEL_OUTPUT_TOKEN_CEILINGS[model]
+    # Prefix match by known keys
+    for key, ceiling in MODEL_OUTPUT_TOKEN_CEILINGS.items():
+        if model.startswith(key):
+            return ceiling
+    return requested
+
+
+def _clamp_requested_tokens(model: str, requested: int) -> int:
+    """Clamp requested tokens to a safe per-model ceiling.
+
+    Always returns at least 1 token.
+    """
+    try:
+        requested_int = int(requested)
+    except Exception:
+        requested_int = 1
+    ceiling = _get_model_ceiling(model, requested_int)
+    clamped = max(1, min(requested_int, int(ceiling)))
+    return clamped
+
+
 def choose_model(task: str, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Select model and parameters based on task and config.
 
@@ -32,7 +91,7 @@ def choose_model(task: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
     task = (task or "").lower()
     if task == 'intent':
         return {
-            'model': getattr(cfg.analysis, 'llm_intent_model', 'gpt-5-nano'),
+            'model': getattr(cfg.analysis, 'llm_intent_model', 'gpt-4o-mini'),
             'temperature': getattr(cfg.analysis, 'llm_intent_temperature', 0.0),
             'max_tokens': getattr(cfg.analysis, 'llm_intent_max_tokens', 150),
             'reasoning': {'effort': cfg.llm.reasoning_effort.get('intent', 'minimal')},
@@ -40,28 +99,29 @@ def choose_model(task: str, context: Optional[Dict[str, Any]] = None) -> Dict[st
         }
     if task == 'answer':
         return {
-            'model': getattr(cfg.query_processing, 'answer_model', getattr(cfg.query_processing, 'gpt4_model', 'gpt-5-mini')),
+            'model': getattr(cfg.query_processing, 'answer_model', getattr(cfg.query_processing, 'gpt4_model', 'gpt-4o-mini')),
             'max_tokens': getattr(cfg.query_processing, 'answer_max_tokens', getattr(cfg.query_processing, 'gpt4_max_tokens', 2000)),
+            'temperature': float(getattr(cfg.query_processing, 'answer_temperature', 0.0) or 0.0),
             'reasoning': {'effort': cfg.llm.reasoning_effort.get('answer', 'medium')},
             'text': {'verbosity': cfg.llm.verbosity.get('answer', 'medium')},
         }
     if task in ('extraction', 'structure_analysis'):
         return {
-            'model': getattr(cfg.extraction, 'structure_analysis_model', 'gpt-5'),
+            'model': getattr(cfg.extraction, 'structure_analysis_model', 'gpt-4o-mini'),
             'max_tokens': getattr(cfg.extraction, 'structure_analysis_max_tokens', getattr(cfg.extraction, 'gpt4_max_tokens_analysis', 3000)),
             'reasoning': {'effort': cfg.llm.reasoning_effort.get('extraction', 'high')},
             'text': {'verbosity': cfg.llm.verbosity.get('extraction', 'low')},
         }
     if task in ('query_generation',):
         return {
-            'model': getattr(cfg.extraction, 'query_generation_model', 'gpt-5'),
+            'model': getattr(cfg.extraction, 'query_generation_model', 'gpt-4o-mini'),
             'max_tokens': getattr(cfg.extraction, 'extraction_max_tokens', getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 4000)),
             'reasoning': {'effort': cfg.llm.reasoning_effort.get('extraction', 'high')},
             'text': {'verbosity': cfg.llm.verbosity.get('extraction', 'low')},
         }
     # Default safe
     return {
-        'model': 'gpt-5-mini',
+        'model': 'gpt-4o-mini',
         'max_tokens': 1000,
         'reasoning': {'effort': 'medium'},
         'text': {'verbosity': 'medium'},
@@ -72,7 +132,8 @@ def call_chat_completion(client, messages: List[Dict[str, str]], *,
                          model: str, max_tokens: int,
                          reasoning: Optional[Dict[str, Any]] = None,
                          text: Optional[Dict[str, Any]] = None,
-                         enforce_json: bool = False) -> Tuple[str, Dict[str, Any]]:
+                         enforce_json: bool = False,
+                         temperature: Optional[float] = None) -> Tuple[str, Dict[str, Any]]:
     """Call OpenAI chat.completions with unified params and measure metrics.
 
     Returns (content, meta) where meta has: model, latency_ms, usage, error.
@@ -86,6 +147,7 @@ def call_chat_completion(client, messages: List[Dict[str, str]], *,
             'enforce_json': bool(enforce_json),
             'reasoning_effort': (reasoning or {}).get('effort'),
             'text_verbosity': (text or {}).get('verbosity'),
+            'temperature': float(temperature) if temperature is not None else None,
             'messages_count': len(messages) if isinstance(messages, list) else 1,
         }
         logger.info(f"LLM call start | params={param_summary}")
@@ -112,16 +174,29 @@ def call_chat_completion(client, messages: List[Dict[str, str]], *,
                 text_param = text_param or {}
                 text_param['format'] = fmt
 
+            # Clamp tokens for Responses API
+            clamped_tokens = _clamp_requested_tokens(model, max_tokens)
             kwargs_resp: Dict[str, Any] = {
                 'model': model,
                 'input': input_payload,
-                'max_output_tokens': int(max_tokens),
+                'max_output_tokens': int(clamped_tokens),
             }
             if reasoning:
                 kwargs_resp['reasoning'] = reasoning
             if text_param:
                 kwargs_resp['text'] = text_param
-            resp = client.responses.create(**kwargs_resp)
+            try:
+                resp = client.responses.create(**kwargs_resp)
+            except Exception as e:
+                # Adaptive single retry for token-limit errors
+                err_msg_local = str(e).lower()
+                if 'max_tokens is too large' in err_msg_local or 'max_output_tokens' in err_msg_local:
+                    reduced = max(1, int(min(_get_model_ceiling(model, clamped_tokens), clamped_tokens * 0.75)))
+                    kwargs_resp['max_output_tokens'] = reduced
+                    logger.info(f"Adaptive retry (responses) due to token limit | model={model} tokens={clamped_tokens}->{reduced}")
+                    resp = client.responses.create(**kwargs_resp)
+                else:
+                    raise
             latency_ms = int((time.time() - start) * 1000)
             # Extract concatenated text from responses output
             output_text = ""
@@ -160,7 +235,7 @@ def call_chat_completion(client, messages: List[Dict[str, str]], *,
                     chat_kwargs = {
                         'model': model,
                         'messages': [{"role": "user", "content": input_payload if isinstance(input_payload, str) else messages}],
-                        'max_completion_tokens': int(max_tokens),
+                        'max_completion_tokens': int(_clamp_requested_tokens(model, max_tokens)),
                     }
                     if enforce_json:
                         chat_kwargs['response_format'] = {'type': 'json_object'}
@@ -191,15 +266,26 @@ def call_chat_completion(client, messages: List[Dict[str, str]], *,
             logger.warning(f"Responses API failed; falling back to chat | model={model} err={e}")
 
     # Build base kwargs for Chat Completions
+    clamped_chat_tokens = _clamp_requested_tokens(model, max_tokens)
     kwargs: Dict[str, Any] = {
         'model': model,
         'messages': messages,
-        'max_completion_tokens': int(max_tokens),
+        'max_completion_tokens': int(clamped_chat_tokens),
     }
-    if reasoning:
-        kwargs['reasoning'] = reasoning
-    if text:
-        kwargs['text'] = text
+    # GPT-4 family: do not include reasoning/text params; prefer temperature
+    if model.startswith('gpt-5'):
+        if reasoning:
+            kwargs['reasoning'] = reasoning
+        if text:
+            kwargs['text'] = text
+    # Temperature: default to 0.0 if not provided
+    if temperature is None:
+        try:
+            # Prefer deterministic output for non-GPT-5 models
+            temperature = 0.0
+        except Exception:
+            temperature = 0.0
+    kwargs['temperature'] = float(temperature)
     if enforce_json:
         kwargs['response_format'] = {'type': 'json_object'}
 
@@ -228,12 +314,30 @@ def call_chat_completion(client, messages: List[Dict[str, str]], *,
     # First try with full kwargs
     content, meta, err = _try_call(kwargs)
     if err is None:
-        logger.info(f"LLM call ok | model={model} tokens={max_tokens} latency_ms={meta['latency_ms']}")
+        logger.info(f"LLM call ok | model={model} tokens={clamped_chat_tokens} latency_ms={meta['latency_ms']}")
         return content, meta
 
     # Retry logic: strip unsupported kwargs progressively
     err_msg = str(err)
     logger.warning(f"LLM call failed | model={model} err={err_msg}")
+
+    # Adaptive single retry for token-limit errors: clamp to 75% and model ceiling
+    err_lc = err_msg.lower()
+    if 'max_tokens is too large' in err_lc or 'max_completion_tokens' in err_lc:
+        try:
+            current = int(kwargs.get('max_completion_tokens') or clamped_chat_tokens)
+        except Exception:
+            current = clamped_chat_tokens
+        reduced_tokens = max(1, int(min(_get_model_ceiling(model, current), current * 0.75)))
+        if reduced_tokens < current:
+            kwargs['max_completion_tokens'] = reduced_tokens
+            logger.info(f"Adaptive retry (chat) due to token limit | model={model} tokens={current}->{reduced_tokens}")
+            content, meta, err_adapt = _try_call(kwargs)
+            if err_adapt is None:
+                logger.info(f"LLM call ok (adaptive) | model={model} tokens={reduced_tokens} latency_ms={meta['latency_ms']}")
+                return content, meta
+            err_msg = str(err_adapt)
+            logger.warning(f"LLM adaptive retry failed | model={model} err={err_msg}")
 
     # 1) Remove reasoning/text if unsupported
     if 'reasoning' in kwargs or 'text' in kwargs:
@@ -241,31 +345,18 @@ def call_chat_completion(client, messages: List[Dict[str, str]], *,
         kwargs.pop('text', None)
         content, meta, err2 = _try_call(kwargs)
         if err2 is None:
-            logger.info(f"LLM call ok (no reasoning/text) | model={model} tokens={max_tokens} latency_ms={meta['latency_ms']}")
+            logger.info(f"LLM call ok (no reasoning/text) | model={model} tokens={kwargs.get('max_completion_tokens')} latency_ms={meta['latency_ms']}")
             return content, meta
         err_msg = str(err2)
         logger.warning(f"LLM retry failed (no reasoning/text) | model={model} err={err_msg}")
 
-    # 2) Fallback from max_completion_tokens to max_tokens if needed
-    if 'max_completion_tokens' in kwargs:
-        kwargs_fallback = dict(kwargs)
-        val = kwargs_fallback.pop('max_completion_tokens', None)
-        if val is not None:
-            kwargs_fallback['max_tokens'] = val
-        content, meta, err3 = _try_call(kwargs_fallback)
-        if err3 is None:
-            logger.info(f"LLM call ok (max_tokens fallback) | model={model} tokens={max_tokens} latency_ms={meta['latency_ms']}")
-            return content, meta
-        err_msg = str(err3)
-        logger.warning(f"LLM retry failed (max_tokens fallback) | model={model} err={err_msg}")
-        kwargs = kwargs_fallback
+    # 2) Drop response_format if unsupported (keep parameter naming normalized)
 
-    # 3) Drop response_format if unsupported
     if 'response_format' in kwargs:
         kwargs.pop('response_format', None)
         content, meta, err4 = _try_call(kwargs)
         if err4 is None:
-            logger.info(f"LLM call ok (no response_format) | model={model} tokens={max_tokens} latency_ms={meta['latency_ms']}")
+            logger.info(f"LLM call ok (no response_format) | model={model} tokens={kwargs.get('max_completion_tokens')} latency_ms={meta['latency_ms']}")
             return content, meta
         err_msg = str(err4)
         logger.warning(f"LLM retry failed (no response_format) | model={model} err={err_msg}")
@@ -378,6 +469,7 @@ def repair_with_model(client, *, prompt: str, schema_hint: Optional[str],
         reasoning=params.get('reasoning'),
         text=params.get('text'),
         enforce_json=True,
+        temperature=params.get('temperature'),
     )
 
 

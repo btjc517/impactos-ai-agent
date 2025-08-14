@@ -15,7 +15,7 @@ from pathlib import Path
 import logging
 
 # ML and AI imports
-from sentence_transformers import SentenceTransformer
+from embedding_registry import get_embedding_model
 import openai
 from openai import OpenAI
 
@@ -54,25 +54,8 @@ class DataIngestion:
         self.enhanced_loader = EnhancedFileLoader(use_polars=use_polars) if use_enhanced_loader else None
         self.file_metadata = {}  # Store enhanced loading metadata
         
-        # Framework mapping configuration
-        self.framework_mappings = {
-            'UK Social Value Model': {
-                '8.1': 'Community - Local community connections',
-                '8.2': 'Community - Community cohesion',
-                '8.3': 'Community - Arts, heritage, culture'
-            },
-            'UN SDGs': {
-                '1': 'No Poverty',
-                '4': 'Quality Education', 
-                '8': 'Decent Work and Economic Growth',
-                '11': 'Sustainable Cities and Communities',
-                '13': 'Climate Action'
-            },
-            'TOMs': {
-                'NT90': 'Number of volunteering hours donated to VCSEs',
-                'NT91': 'Number of donations or in-kind contributions to VCSEs'
-            }
-        }
+        # No hardcoded framework configs; use concept graph when needed
+        self.framework_mappings = {}
     
     def _initialize_openai(self) -> Optional[OpenAI]:
         """Initialize OpenAI client with API key."""
@@ -89,11 +72,14 @@ class DataIngestion:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             return None
     
-    def _initialize_embedding_model(self) -> Optional[SentenceTransformer]:
-        """Initialize sentence transformer for embeddings."""
+    def _initialize_embedding_model(self) -> Optional["SentenceTransformer"]:
+        """Initialize or reuse a shared sentence transformer for embeddings."""
         try:
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("Embedding model initialized successfully")
+            model = get_embedding_model()
+            if model is not None:
+                logger.info("Embedding model initialized (shared)")
+            else:
+                logger.error("Embedding model unavailable; embeddings disabled")
             return model
         except Exception as e:
             logger.error(f"Failed to initialize embedding model: {e}")
@@ -142,14 +128,32 @@ class DataIngestion:
                 logger.info("Using advanced query-based extraction for zero mistakes")
                 from extract_v2 import QueryBasedExtraction
                 extractor = QueryBasedExtraction(self.db_path)
-                metrics = extractor.extract_metrics_v2(file_path, source_id)
+                # Reuse enhanced loader DataFrame and metadata when available
+                enhanced_df = data
+                enhanced_meta = None
+                try:
+                    if self.use_enhanced_loader and self.enhanced_loader and self.current_file_path in self.file_metadata:
+                        enhanced_meta = self.file_metadata[self.current_file_path]
+                except Exception:
+                    enhanced_meta = None
+                metrics = extractor.extract_metrics_v2(file_path, source_id, df=enhanced_df, metadata=enhanced_meta)
             else:
                 logger.info("Using legacy text-based extraction")
                 metrics = self._extract_metrics(data, source_id)
-            
+
+            # Short-circuit: if no metrics were found, do NOT deduplicate or rebuild FAISS.
+            # Preserve prior sources to prevent data loss.
+            if not metrics:
+                self._update_source_status(source_id, 'no_metrics')
+                logger.info(
+                    f"Ingestion completed with no metrics for {file_path}; "
+                    f"skipping de-duplication and FAISS rebuild to preserve prior sources"
+                )
+                return True
+
             # 6. Store metrics and create embeddings
             success = self._store_metrics(metrics, source_id)
-            
+
             # 7. Update source processing status and de-duplicate
             if success:
                 self._update_source_status(source_id, 'completed')
@@ -173,14 +177,23 @@ class DataIngestion:
         if not os.path.exists(file_path):
             logger.error(f"File not found: {file_path}")
             return False
-        
+
         supported_extensions = ['.xlsx', '.csv', '.pdf']
         file_ext = Path(file_path).suffix.lower()
-        
         if file_ext not in supported_extensions:
             logger.error(f"Unsupported file format: {file_ext}")
             return False
-        
+
+        # Advisory semantic resolver (non-blocking)
+        try:
+            from semantic_resolver import SemanticResolver
+            res = SemanticResolver().resolve_file_type(str(file_path))
+            if res.get('outcome') != 'accepted':
+                logger.warning(f"Semantic resolver did not accept file type for {file_path}; proceeding by extension {file_ext}")
+        except Exception:
+            # Resolver unavailable; proceed by extension
+            pass
+
         return True
     
     def _register_source(self, file_path: str) -> Optional[int]:
@@ -188,7 +201,16 @@ class DataIngestion:
         try:
             file_stat = os.stat(file_path)
             filename = Path(file_path).name
-            file_type = Path(file_path).suffix[1:]  # Remove the dot
+            # Resolve canonical file type via semantic resolver
+            try:
+                from semantic_resolver import SemanticResolver
+                r = SemanticResolver().resolve_file_type(str(file_path))
+                if r.get('outcome') == 'accepted' and r.get('key'):
+                    file_type = r.get('key')
+                else:
+                    file_type = Path(file_path).suffix[1:]
+            except Exception:
+                file_type = Path(file_path).suffix[1:]
             
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -493,16 +515,17 @@ class DataIngestion:
             cfg = get_config()
             # Log GPT call parameters for ingestion (legacy text-based extraction)
             try:
-                _model = getattr(cfg.extraction, 'query_generation_model', 'gpt-5')
+                _model = getattr(cfg.extraction, 'query_generation_model', 'gpt-4o-mini')
                 _max_tokens = getattr(cfg.extraction, 'extraction_max_tokens', getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 4000))
                 logger.info(f"LLM call start | context=ingestion_legacy_extraction params={{'model': '{_model}', 'max_tokens': {_max_tokens}, 'enforce_json': False, 'reasoning_effort': None, 'text_verbosity': None, 'messages_count': 1}}")
             except Exception:
                 pass
             response = self.openai_client.chat.completions.create(
-                model=getattr(cfg.extraction, 'query_generation_model', 'gpt-5'),
+                model=getattr(cfg.extraction, 'query_generation_model', 'gpt-4o-mini'),
                 messages=[{"role": "user", "content": prompt}],
                 # Temperature unused for GPT-5-only setup
-                max_completion_tokens=getattr(cfg.extraction, 'extraction_max_tokens', getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 4000))
+                max_completion_tokens=getattr(cfg.extraction, 'extraction_max_tokens', getattr(cfg.extraction, 'gpt4_max_tokens_extraction', 4000)),
+                temperature=0.0
             )
 
             result_text = response.choices[0].message.content.strip()
@@ -611,10 +634,14 @@ class DataIngestion:
             return 'count'
     
     def _store_metrics(self, metrics: List[Dict[str, Any]], source_id: int) -> bool:
-        """Store extracted metrics in database and create embeddings."""
+        """Store extracted metrics in database and create embeddings.
+
+        Returns False if metrics list is empty to signal caller to skip
+        de-duplication paths that might remove prior sources.
+        """
         if not metrics:
-            logger.warning("No metrics to store")
-            return True
+            logger.info("_store_metrics called with empty metrics; signaling no store")
+            return False
 
         try:
             with sqlite3.connect(self.db_path) as conn:

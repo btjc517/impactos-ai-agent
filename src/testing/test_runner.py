@@ -271,14 +271,14 @@ class TestRunner:
                 output_tokens = len(answer) // 4
                 
                 self.metrics_collector.record_gpt_call(
-                    model=getattr(self.config.query_processing, 'answer_model', getattr(self.config.query_processing, 'gpt4_model', 'gpt-5-mini')),
+                    model=getattr(self.config.query_processing, 'answer_model', getattr(self.config.query_processing, 'gpt4_model', 'gpt-4o-mini')),
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
-                    # Temperature unused for GPT-5; keep for legacy-only configs (ignored by client)
-                    max_completion_tokens=getattr(self.config.query_processing, 'answer_max_tokens', getattr(self.config.query_processing, 'gpt4_max_tokens', 2000)),
+                    temperature=float(getattr(self.config.query_processing, 'answer_temperature', 0.0) or 0.0),
+                    max_tokens=getattr(self.config.query_processing, 'answer_max_tokens', getattr(self.config.query_processing, 'gpt4_max_tokens', 2000)),
                     response_time=gpt_time,
                     response_length=len(answer),
-                    truncated=len(answer) > (getattr(self.config.query_processing, 'answer_max_tokens', getattr(self.config.query_processing, 'gpt4_max_tokens', 2000)) * 3)  # Rough estimate
+                    truncated=len(answer) > (getattr(self.config.query_processing, 'answer_max_tokens', getattr(self.config.query_processing, 'gpt4_max_tokens', 2000)) * 3)
                 )
             else:
                 answer = self.query_system._generate_fallback_answer(query, final_results)

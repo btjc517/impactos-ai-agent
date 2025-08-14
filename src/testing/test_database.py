@@ -331,9 +331,9 @@ class TestDatabase:
                 metrics.get('similarity_threshold'),
                 metrics.get('max_results_for_gpt'),
                 metrics.get('gpt_max_tokens'),
-                metrics.get('python_version'),
-                metrics.get('faiss_version'),
-                metrics.get('torch_version')
+                 str(metrics.get('python_version')) if metrics.get('python_version') is not None else None,
+                 str(metrics.get('faiss_version')) if metrics.get('faiss_version') is not None else None,
+                 str(metrics.get('torch_version')) if metrics.get('torch_version') is not None else None
             ))
     
     def store_quality_metrics(self, test_run_id: int, metrics: Dict[str, Any]):

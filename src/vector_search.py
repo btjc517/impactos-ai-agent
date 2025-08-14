@@ -13,7 +13,7 @@ import os
 import pickle
 import logging
 from typing import List, Dict, Any, Tuple, Optional
-from sentence_transformers import SentenceTransformer
+from embedding_registry import get_embedding_model
 
 # Logging configured by entrypoint; avoid per-module basicConfig
 logger = logging.getLogger(__name__)
@@ -58,11 +58,14 @@ class FAISSVectorSearch:
         # Load existing index if available
         self._load_or_create_index()
     
-    def _initialize_embedding_model(self) -> Optional[SentenceTransformer]:
-        """Initialize sentence transformer model."""
+    def _initialize_embedding_model(self) -> Optional["SentenceTransformer"]:
+        """Initialize or reuse a shared sentence transformer model."""
         try:
-            model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("FAISS embedding model initialized successfully")
+            model = get_embedding_model()
+            if model is not None:
+                logger.info("FAISS embedding model initialized (shared)")
+            else:
+                logger.error("FAISS embedding model unavailable; search disabled")
             return model
         except Exception as e:
             logger.error(f"Failed to initialize embedding model: {e}")

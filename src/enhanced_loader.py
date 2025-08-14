@@ -325,13 +325,24 @@ class EnhancedFileLoader:
             raise FileNotFoundError(f"File not found: {file_path}")
         
         file_ext = file_path.suffix.lower()
-        
+        # Allow semantic resolution for file type to avoid brittle checks
+        try:
+            from semantic_resolver import SemanticResolver
+            res = SemanticResolver().resolve_file_type(str(file_path))
+            if res.get('outcome') == 'accepted':
+                key = res.get('key')
+                if key == 'excel':
+                    return self._load_excel_enhanced(file_path, sheet_name)
+                if key == 'csv':
+                    return self._load_csv_enhanced(file_path)
+        except Exception:
+            pass
+        # Fallback to extension-based
         if file_ext == '.xlsx':
             return self._load_excel_enhanced(file_path, sheet_name)
-        elif file_ext == '.csv':
+        if file_ext == '.csv':
             return self._load_csv_enhanced(file_path)
-        else:
-            raise ValueError(f"Unsupported file format: {file_ext}")
+        raise ValueError(f"Unsupported file format: {file_ext}")
     
     def _load_excel_enhanced(self, file_path: Path, sheet_name: Optional[str] = None) -> Tuple[Union[pd.DataFrame, pl.DataFrame], Dict[str, Any]]:
         """Load Excel file with openpyxl pre-scanning and type inference."""
@@ -350,7 +361,7 @@ class EnhancedFileLoader:
         
         worksheet = workbook[sheet_name]
         
-        # Step 2: Analyze structure and gather cell references
+        # Step 2: Analyze structure and gather cell references (with empty-column trimming)
         cell_data, structure_info = self._analyze_worksheet_structure(worksheet, sheet_name)
         
         # Step 3: Perform type inference on columns
@@ -454,36 +465,60 @@ class EnhancedFileLoader:
             raise
     
     def _analyze_worksheet_structure(self, worksheet, sheet_name: str) -> Tuple[Dict[str, List], Dict[str, Any]]:
-        """Analyze worksheet structure and extract cell data with references."""
+        """Analyze worksheet structure and extract cell data with references.
         
-        # Find the actual data range
+        Trims trailing all-empty columns and excludes any all-empty columns from
+        headers, type inference, and metadata to prevent phantom columns.
+        """
+        # Find the raw sheet bounds
         min_row = worksheet.min_row
         max_row = worksheet.max_row
         min_col = worksheet.min_column
         max_col = worksheet.max_column
-        
-        # Extract all cell data with references
-        cell_data = {}
-        cell_references = {}
-        
-        # Get header row (assume first row)
-        headers = []
+
+        # Identify columns that contain any non-empty cell in data rows
+        def _is_non_empty(v: Any) -> bool:
+            return v is not None and (not isinstance(v, str) or v.strip() != "")
+
+        has_data_by_col: Dict[int, bool] = {}
         for col in range(min_col, max_col + 1):
-            cell = worksheet.cell(row=min_row, column=col)
-            header_value = cell.value if cell.value is not None else f"Column_{col}"
-            headers.append(str(header_value))
-            
-            # Initialize column data storage
+            found = False
+            for row in range(min_row + 1, max_row + 1):
+                v = worksheet.cell(row=row, column=col).value
+                if _is_non_empty(v):
+                    found = True
+                    break
+            has_data_by_col[col] = found
+
+        # Determine rightmost column with data, then build include list
+        cols_with_data = [c for c in range(min_col, max_col + 1) if has_data_by_col.get(c, False)]
+        if cols_with_data:
+            rightmost_with_data = max(cols_with_data)
+            columns_to_consider = range(min_col, rightmost_with_data + 1)
+        else:
+            # No data at all: consider zero columns
+            columns_to_consider = []
+
+        # Final columns to include: only those with data within the considered range
+        include_columns = [c for c in columns_to_consider if has_data_by_col.get(c, False)]
+
+        # Extract all cell data with references for included columns only
+        cell_data: Dict[str, List] = {}
+        cell_references: Dict[str, List[CellReference]] = {}
+        headers: List[str] = []
+
+        for col in include_columns:
+            cell_header = worksheet.cell(row=min_row, column=col)
+            header_value = cell_header.value if _is_non_empty(cell_header.value) else f"Column_{col}"
+            header_value = str(header_value)
+            headers.append(header_value)
             cell_data[header_value] = []
             cell_references[header_value] = []
-        
-        # Extract data rows with cell references
+
         for row in range(min_row + 1, max_row + 1):
-            for col_idx, header in enumerate(headers):
-                col = min_col + col_idx
+            for col in include_columns:
+                header = headers[include_columns.index(col)]
                 cell = worksheet.cell(row=row, column=col)
-                
-                # Create cell reference
                 cell_ref = CellReference(
                     row=row,
                     col=col,
@@ -492,22 +527,23 @@ class EnhancedFileLoader:
                     formatted_value=str(cell.value) if cell.value is not None else None,
                     data_type=type(cell.value).__name__ if cell.value is not None else 'NoneType'
                 )
-                
                 cell_data[header].append(cell)
                 cell_references[header].append(cell_ref)
-        
+
         # Store cell references for later use
         self.cell_references[sheet_name] = cell_references
-        
+
+        total_columns = len(include_columns)
+        sheet_dim_right = include_columns[-1] if include_columns else min_col
         structure_info = {
             'total_rows': max_row - min_row,
-            'total_columns': max_col - min_col + 1,
+            'total_columns': total_columns,
             'data_start_row': min_row + 1,
             'data_end_row': max_row,
             'headers': headers,
-            'sheet_dimensions': f"{get_column_letter(min_col)}{min_row}:{get_column_letter(max_col)}{max_row}"
+            'sheet_dimensions': f"{get_column_letter(min_col)}{min_row}:{get_column_letter(sheet_dim_right)}{max_row}" if include_columns else f"{get_column_letter(min_col)}{min_row}:{get_column_letter(min_col)}{min_row}"
         }
-        
+
         return cell_data, structure_info
     
     def _perform_type_inference(self, cell_data: Dict[str, List], structure_info: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -523,8 +559,11 @@ class EnhancedFileLoader:
             type_inference[column_name] = inference_result
             
             # Log insights
-            if inference_result['confidence'] < 0.8:
-                logger.warning(f"Low confidence ({inference_result['confidence']:.2f}) for column '{column_name}': {inference_result['issues']}")
+            issues = inference_result.get('issues', []) or []
+            if any('All cells are empty' in str(issue) for issue in issues):
+                logger.debug(f"Empty column excluded or detected for '{column_name}'")
+            elif inference_result['confidence'] < 0.8:
+                logger.warning(f"Low confidence ({inference_result['confidence']:.2f}) for column '{column_name}': {issues}")
             
             logger.debug(f"Column '{column_name}' inferred as {inference_result['inferred_type']} (confidence: {inference_result['confidence']:.2f})")
         

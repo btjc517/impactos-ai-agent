@@ -7,10 +7,10 @@ project's unified call helper, recording:
 
 Usage examples:
   python3 src/testing/llm_eval.py --prompts "Say hello in one short sentence." \
-    --models gpt-5-mini,gpt-4o-mini --max-output-tokens 64 --enforce-json false
+    --models gpt-4o-mini --max-output-tokens 64 --enforce-json false
 
   python3 src/testing/llm_eval.py --prompts "Return ONLY a JSON object with keys a and b." \
-    --models gpt-5,gpt-5-mini,gpt-4o-mini --max-output-tokens 256 --enforce-json true
+    --models gpt-4o,gpt-4o-mini --max-output-tokens 256 --enforce-json true
 
 Requires OPENAI_API_KEY in environment.
 Outputs a JSONL report under src/testing/results/.
@@ -172,7 +172,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--models",
         type=str,
-        default="gpt-5,gpt-5-mini,gpt-5-nano,gpt-4o-mini",
+        default="gpt-4o,gpt-4o-mini",
         help="Comma-separated list of models",
     )
     parser.add_argument(

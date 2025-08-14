@@ -392,6 +392,29 @@ Examples:
         action='store_true',
         help='Run verification after ingestion'
     )
+    ingest_parser.add_argument(
+        '--bronze-only',
+        action='store_true',
+        help='Only create Bronze tables and sheet registry (no metric extraction)'
+    )
+    ingest_parser.add_argument(
+        '--auto-transform',
+        action='store_true',
+        default=True,
+        help='Enqueue and run Silver transforms for new sheet versions (default: enabled)'
+    )
+    ingest_parser.add_argument(
+        '--no-auto-transform',
+        action='store_false',
+        dest='auto_transform',
+        help='Disable auto-transform and use legacy query-based extraction'
+    )
+    ingest_parser.add_argument(
+        '--mode',
+        choices=['sync','async'],
+        default=None,
+        help='Transform execution mode when auto-transform is enabled'
+    )
     
     # Query command
     query_parser = subparsers.add_parser(
@@ -417,6 +440,11 @@ Examples:
         action='store_true',
         help='Force chart rendering when possible in structured output'
     )
+    query_parser.add_argument(
+        '--debug-time',
+        action='store_true',
+        help='Print resolved time window for debugging'
+    )
     
     # Verify command
     verify_parser = subparsers.add_parser(
@@ -440,6 +468,12 @@ Examples:
         help='List available data files and sources'
     )
 
+    # Medallion seed
+    subparsers.add_parser(
+        'seed-medallion',
+        help='Seed Bronze → Silver → Gold example data and views'
+    )
+
     # Metrics command
     metrics_parser = subparsers.add_parser(
         'metrics',
@@ -455,6 +489,23 @@ Examples:
         action='store_true',
         help='Output results as JSON'
     )
+
+    # Metrics validate (hard-fail)
+    metrics_validate = subparsers.add_parser(
+        'metrics-validate',
+        help='Validate metric YAMLs and report errors (hard-fail)'
+    )
+    metrics_validate.add_argument('--metrics-dir', default=os.getenv('METRICS_DIR') or 'metrics')
+    metrics_validate.add_argument('--strict', action='store_true', help='Fail on any warning (for CI)')
+
+    # Metrics convert (CSV -> YAML)
+    metrics_convert = subparsers.add_parser(
+        'metrics-convert',
+        help='Convert catalog CSV into per-metric YAML files'
+    )
+    metrics_convert.add_argument('csv_path')
+    metrics_convert.add_argument('--metrics-dir', default=os.getenv('METRICS_DIR') or 'metrics')
+    metrics_convert.add_argument('--db-path', default=os.getenv('IMPACTOS_DB_PATH') or 'db/impactos.db')
 
     # Add frameworks command
     frameworks_parser = subparsers.add_parser('frameworks', 
@@ -479,7 +530,51 @@ def main():
     
     try:
         if args.command == 'ingest':
-            success = cli.ingest_data(args.file_path, args.file_type)
+            if getattr(args, 'bronze_only', False):
+                from bronze_ingest import ingest_bronze
+                if getattr(args, 'auto_transform', False):
+                    if args.mode:
+                        os.environ['TRANSFORM_MODE'] = args.mode
+                    os.environ['AUTO_TRANSFORM'] = 'true'
+                res = ingest_bronze(args.file_path, cli.db_path)
+                import json as _json
+                print(_json.dumps(res, indent=2))
+                success = True
+            else:
+                # Use medallion architecture by default
+                from bronze_ingest import ingest_bronze
+                
+                # Set auto-transform as default behavior
+                auto_transform = getattr(args, 'auto_transform', True)  # Default to True
+                if auto_transform:
+                    if args.mode:
+                        os.environ['TRANSFORM_MODE'] = args.mode
+                    else:
+                        os.environ['TRANSFORM_MODE'] = 'sync'  # Default to sync mode
+                    os.environ['AUTO_TRANSFORM'] = 'true'
+                else:
+                    os.environ['AUTO_TRANSFORM'] = 'false'
+                
+                try:
+                    logger.info("Using medallion architecture (Bronze → Silver) for ingestion")
+                    res = ingest_bronze(args.file_path, cli.db_path)
+                    
+                    # Check if medallion ingestion was successful
+                    medallion_success = (
+                        res.get('created_tables', []) and 
+                        res.get('registry_rows', [])
+                    )
+                    
+                    if medallion_success:
+                        logger.info(f"Medallion ingestion successful: {len(res.get('created_tables', []))} bronze tables created")
+                        success = True
+                    else:
+                        logger.warning("Medallion ingestion produced no results, falling back to query-based extraction")
+                        success = cli.ingest_data(args.file_path, args.file_type)
+                        
+                except Exception as e:
+                    logger.warning(f"Medallion ingestion failed ({e}), falling back to query-based extraction")
+                    success = cli.ingest_data(args.file_path, args.file_type)
             
             # Run verification if requested
             if args.verify and success:
@@ -498,7 +593,8 @@ def main():
                 with capture_logs() as log_handler:
                     structured, timings, model_used = qs.query_structured_instrumented(
                         args.question,
-                        force_chart=bool(getattr(args, 'force_chart', False))
+                        force_chart=bool(getattr(args, 'force_chart', False)),
+                        debug_time=bool(getattr(args, 'debug_time', False))
                     )
                 import json as _json
                 print(_json.dumps(structured, indent=2))
@@ -520,7 +616,18 @@ def main():
                 except Exception:
                     pass
             else:
-                answer = cli.query_data(args.question)
+                # Call structured path to surface time window consistently in CLI
+                from query import QuerySystem
+                qs = QuerySystem(cli.db_path)
+                structured, timings, model_used = qs.query_structured_instrumented(
+                    args.question,
+                    force_chart=bool(getattr(args, 'force_chart', False)),
+                    debug_time=bool(getattr(args, 'debug_time', False))
+                )
+                answer = structured.get('answer', '')
+                if getattr(args, 'debug_time', False):
+                    tw = structured.get('time_window')
+                    print(f"Time window: {tw}")
                 print(f"\nAnswer: {answer}")
                 
                 # Show verification summary if requested
@@ -545,6 +652,26 @@ def main():
             
         elif args.command == 'frameworks':
             cli.show_framework_report(args)
+        
+        elif args.command == 'metrics-validate':
+            from metric_loader import MetricCatalog
+            # Loader logs and skips invalid files; for hard-fail CLI we still exit 0 with count
+            cat = MetricCatalog(metrics_dir=getattr(args, 'metrics_dir', 'metrics'))
+            issues = cat.validate(strict=bool(getattr(args, 'strict', False)))
+            print(f"Loaded {len(cat._metrics)} metrics from {getattr(args, 'metrics_dir', 'metrics')} | issues: {issues}")
+            if getattr(args, 'strict', False) and issues > 0:
+                sys.exit(1)
+        
+        elif args.command == 'metrics-convert':
+            from metric_csv_converter import MetricCSVConverter
+            conv = MetricCSVConverter(metrics_dir=getattr(args, 'metrics_dir', 'metrics'), db_path=getattr(args, 'db_path', 'db/impactos.db'))
+            res = conv.convert(getattr(args, 'csv_path'))
+            import json as _json
+            print(_json.dumps(res, indent=2))
+        
+        elif args.command == 'seed-medallion':
+            from seed_medallion import main as seed_main
+            seed_main()
             
         else:
             parser.print_help()

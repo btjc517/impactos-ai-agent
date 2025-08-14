@@ -133,3 +133,18 @@ def run():
 
 if __name__ == "__main__":
     run() 
+
+# Medallion sanity: ensure gold view exists after migration when executed in isolation
+def test_gold_view_presence_if_migrated(tmp_path):
+    db_path = tmp_path / 'impactos.db'
+    os.environ['IMPACTOS_DB_PATH'] = str(db_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        ddl = Path(__file__).resolve().parents[2] / 'db' / 'migrations' / '20250813T000000Z__medallion_v1.sql'
+        with open(ddl, 'r') as f:
+            conn.executescript(f.read())
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='view' AND name='gold_volunteer_hours_monthly'")
+        assert cur.fetchone() is not None
+    finally:
+        conn.close()

@@ -1,0 +1,71 @@
+{
+  "fact_volunteering": {
+    "required": ["value", "date"],
+    "optional": ["person_ref", "site_code", "unit"],
+    "role_hints": {
+      "value": {"unit": "hours", "dtype": "numeric"},
+      "date": {"dtype": "date"},
+      "person_ref": {"dtype": "string"},
+      "site_code": {"dtype": "string"},
+      "unit": {"dtype": "string", "values": ["hours", "hrs", "h"]}
+    },
+    "description": "Volunteer hours and time tracking",
+    "default_unit": "hours",
+    "base_currency": "GBP"
+  },
+  "fact_donations": {
+    "required": ["value", "date"],
+    "optional": ["currency", "person_ref", "site_code"],
+    "role_hints": {
+      "value": {"unit": "currency", "dtype": "numeric"},
+      "date": {"dtype": "date"},
+      "currency": {"dtype": "string", "values": ["GBP", "USD", "EUR", "£", "$", "€"]},
+      "person_ref": {"dtype": "string"},
+      "site_code": {"dtype": "string"}
+    },
+    "description": "Charitable donations and giving",
+    "default_currency": "GBP",
+    "base_currency": "GBP"
+  },
+  "fact_procurement": {
+    "required": ["value", "date"],
+    "optional": ["supplier_code", "site_code", "currency"],
+    "role_hints": {
+      "value": {"unit": "currency", "dtype": "numeric"},
+      "date": {"dtype": "date"},
+      "supplier_code": {"dtype": "string"},
+      "site_code": {"dtype": "string"},
+      "currency": {"dtype": "string", "values": ["GBP", "USD", "EUR", "£", "$", "€"]}
+    },
+    "description": "Responsible procurement spend",
+    "default_currency": "GBP",
+    "base_currency": "GBP"
+  },
+  "fact_energy": {
+    "required": ["value", "date"],
+    "optional": ["unit", "site_code", "supplier_code"],
+    "role_hints": {
+      "value": {"unit": "energy", "dtype": "numeric"},
+      "date": {"dtype": "date"},
+      "unit": {"dtype": "string", "values": ["kWh", "MWh", "GWh", "kw", "mw", "gw"]},
+      "site_code": {"dtype": "string"},
+      "supplier_code": {"dtype": "string"}
+    },
+    "description": "Energy consumption and emissions",
+    "default_unit": "kWh",
+    "base_currency": "GBP"
+  },
+  "fact_waste": {
+    "required": ["value", "date"],
+    "optional": ["unit", "site_code"],
+    "role_hints": {
+      "value": {"unit": "mass", "dtype": "numeric"},
+      "date": {"dtype": "date"},
+      "unit": {"dtype": "string", "values": ["tonnes", "kg", "t", "tons"]},
+      "site_code": {"dtype": "string"}
+    },
+    "description": "Waste volumes and management",
+    "default_unit": "tonnes",
+    "base_currency": "GBP"
+  }
+}

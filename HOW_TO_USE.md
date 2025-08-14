@@ -66,7 +66,7 @@ python test_runner.py --quick
 
 source /Users/benjamincheesebrough/Desktop/impactos-ai-agent/impactos-env-new/bin/activate
 PYTHONPATH=src python3 src/testing/llm_eval.py --suite all \
-  --models gpt-5-mini,gpt-4o-mini \
+  --models gpt-4o-mini \
   --max-output-tokens 256 \
   --reasoning minimal \
   --verbosity low \
@@ -74,3 +74,7 @@ PYTHONPATH=src python3 src/testing/llm_eval.py --suite all \
   --concurrency 3
 
 ./run.sh metrics --file TakingCare_Benevity_Synthetic_Data.xlsx --json
+
+
+re ingest all:
+set -euo pipefail; for f in /Users/benjamincheesebrough/Desktop/impactos-ai-agent/data/*; do [ -f "$f" ] || continue; echo "Ingesting: $f"; PYTHONPATH=/Users/benjamincheesebrough/Desktop/impactos-ai-agent/src python3 /Users/benjamincheesebrough/Desktop/impactos-ai-agent/src/main.py ingest "$f"; done

@@ -11,6 +11,7 @@ This enables standardized social value reporting and benchmarking.
 """
 
 import sqlite3
+import os
 from typing import Dict, List, Any, Optional
 import json
 import logging
@@ -28,71 +29,24 @@ class FrameworkMapper:
         """Initialize framework mapper with database connection."""
         self.db_path = db_path
         
-        # Framework definitions
-        self.frameworks = self._load_framework_definitions()
+        # Framework definitions are loaded from the concept graph (no hardcoding)
+        try:
+            from semantic_resolver import ConceptGraph
+            g = ConceptGraph(self.db_path)
+            # Build a lightweight view of frameworks for reporting
+            frameworks = {}
+            for f in g.list_concepts('framework'):
+                frameworks[f['key'].upper()] = {
+                    'name': f['name'],
+                    'categories': {},
+                }
+            self.frameworks = frameworks
+        except Exception:
+            self.frameworks = {}
     
     def _load_framework_definitions(self) -> Dict[str, Any]:
-        """Load framework mapping definitions."""
-        return {
-            "UK_SV_MODEL": {
-                "name": "UK Social Value Model (MAC)",
-                "categories": {
-                    "1.0": "Crime",
-                    "2.0": "Education", 
-                    "3.0": "Employment",
-                    "4.0": "Environment",
-                    "5.0": "Health",
-                    "6.0": "Social Cohesion",
-                    "7.0": "Housing",
-                    "8.0": "Community Engagement"
-                },
-                "subcategories": {
-                    "3.1": "Jobs for local people",
-                    "3.2": "Apprenticeships",
-                    "3.3": "Skills development",
-                    "4.1": "Carbon emissions reduction",
-                    "4.2": "Waste reduction",
-                    "4.3": "Biodiversity improvement",
-                    "8.1": "Community volunteering",
-                    "8.2": "Charitable giving"
-                }
-            },
-            "UN_SDGS": {
-                "name": "UN Sustainable Development Goals",
-                "goals": {
-                    "1": "No Poverty",
-                    "3": "Good Health and Well-being", 
-                    "4": "Quality Education",
-                    "5": "Gender Equality",
-                    "8": "Decent Work and Economic Growth",
-                    "10": "Reduced Inequalities",
-                    "11": "Sustainable Cities and Communities",
-                    "12": "Responsible Consumption and Production",
-                    "13": "Climate Action",
-                    "16": "Peace, Justice and Strong Institutions"
-                }
-            },
-            "TOMS": {
-                "name": "Themes, Outcomes and Measures",
-                "themes": {
-                    "NT1": "Local employment",
-                    "NT2": "Local skills and employment", 
-                    "NT3": "Responsible procurement",
-                    "NT4": "Environmental management",
-                    "NT90": "Volunteering time"
-                }
-            },
-            "B_CORP": {
-                "name": "B Corporation Assessment",
-                "impact_areas": {
-                    "governance": "Governance",
-                    "workers": "Workers", 
-                    "community": "Community",
-                    "environment": "Environment",
-                    "customers": "Customers"
-                }
-            }
-        }
+        # Deprecated; retained for backward compatibility
+        return self.frameworks
     
     def map_metric_to_frameworks(self, metric_name: str, metric_category: str, 
                                 metric_context: str = "") -> Dict[str, List[str]]:
@@ -109,28 +63,23 @@ class FrameworkMapper:
         """
         mappings = {}
         
-        # Combine all text for analysis
-        full_context = f"{metric_name} {metric_category} {metric_context}".lower()
-        
-        # Map to UK Social Value Model
-        uk_mappings = self._map_to_uk_sv_model(full_context)
-        if uk_mappings:
-            mappings["UK_SV_MODEL"] = uk_mappings
-        
-        # Map to UN SDGs
-        sdg_mappings = self._map_to_sdgs(full_context)
-        if sdg_mappings:
-            mappings["UN_SDGS"] = sdg_mappings
-        
-        # Map to TOMs
-        toms_mappings = self._map_to_toms(full_context)
-        if toms_mappings:
-            mappings["TOMS"] = toms_mappings
-        
-        # Map to B Corp
-        bcorp_mappings = self._map_to_bcorp(full_context)
-        if bcorp_mappings:
-            mappings["B_CORP"] = bcorp_mappings
+        # Semantic mapping via concept graph (no hardcoded rules)
+        try:
+            from semantic_resolver import SemanticResolver
+            resolver = SemanticResolver(self.db_path)
+            full_text = f"{metric_name} | {metric_category} | {metric_context}".strip()
+            # Resolve framework first
+            results: Dict[str, List[str]] = {}
+            for framework in ['uk_sv_model', 'un_sdgs', 'toms', 'b_corp']:
+                fr = resolver.resolve('framework', framework)
+                if fr.get('outcome') == 'accepted':
+                    # Resolve categories within that framework by similarity against the metric text
+                    # For now, store framework key with a placeholder category resolution to be enriched later
+                    results[fr['key'].upper()] = []
+            return results
+        except Exception:
+            # Fallback to empty when resolver unavailable
+            return {}
         
         return mappings
     
@@ -242,6 +191,12 @@ class FrameworkMapper:
     def apply_mappings_to_database(self) -> Dict[str, int]:
         """Apply framework mappings to all metrics in database."""
         try:
+            # Feature flag: allow disabling framework mappings entirely
+            enabled_env = os.getenv('IMPACTOS_FRAMEWORKS_ENABLED', 'true').strip().lower()
+            if enabled_env not in ('1', 'true', 'yes', 'on'):
+                logger.info("Framework mappings disabled via IMPACTOS_FRAMEWORKS_ENABLED")
+                return {}
+
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
@@ -253,7 +208,7 @@ class FrameworkMapper:
                 """)
                 metrics = cursor.fetchall()
                 
-                mapping_counts = {"UK_SV_MODEL": 0, "UN_SDGS": 0, "TOMS": 0, "B_CORP": 0}
+                mapping_counts: Dict[str, int] = {}
                 
                 for metric in metrics:
                     # Generate framework mappings
@@ -265,17 +220,20 @@ class FrameworkMapper:
                     
                     # Store mappings
                     for framework, categories in mappings.items():
+                        # Ensure at least a general category is recorded
+                        if not categories:
+                            categories = ['GENERAL']
                         for category in categories:
                             try:
-                                cursor.execute("""
+                                cursor.execute(
+                                    """
                                     INSERT OR REPLACE INTO framework_mappings 
-                                    (metric_id, framework_id, framework_code, framework_description, mapping_confidence)
-                                    VALUES (?, 1, ?, ?, ?)
-                                """, (metric['id'], f"{framework}:{category}", 
-                                      f"{framework} - {category}", 0.8))
-                                
-                                mapping_counts[framework] += 1
-                                
+                                    (impact_metric_id, framework_name, framework_category, mapping_confidence)
+                                    VALUES (?, ?, ?, ?)
+                                    """,
+                                    (metric['id'], framework, category, 0.7),
+                                )
+                                mapping_counts[framework] = mapping_counts.get(framework, 0) + 1
                             except Exception as e:
                                 logger.error(f"Error storing mapping for metric {metric['id']}: {e}")
                 

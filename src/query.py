@@ -15,7 +15,7 @@ import os
 from typing import Dict, List, Any, Optional, Tuple
 import time
 import logging
-from datetime import datetime
+from datetime import datetime, date
 
 # AI and ML imports
 from sentence_transformers import SentenceTransformer
@@ -28,11 +28,13 @@ from schema import DatabaseSchema
 from frameworks import FrameworkMapper
 from vector_search import FAISSVectorSearch
 from config import get_config, get_config_manager
+from time_phrases import parse_time_phrase
 from llm_utils import (
     choose_model,
     call_chat_completion,
     should_escalate_answer,
 )
+from ir_planner import generate_ir_with_validation
 
 # Setup logging is configured at the entrypoint; avoid per-module basicConfig
 logger = logging.getLogger(__name__)
@@ -290,6 +292,7 @@ class QuerySystem:
                 reasoning=p.get('reasoning'),
                 text=p.get('text'),
                 enforce_json=True,
+                temperature=p.get('temperature'),
             )
             import json as _json
             data = None
@@ -313,11 +316,12 @@ class QuerySystem:
                 content2, _ = call_chat_completion(
                     self.openai_client,
                     messages=[{"role": "user", "content": prompt}],
-                    model='gpt-5-mini',
+                    model='gpt-4o-mini',
                     max_tokens=p['max_tokens'],
                     reasoning={'effort': 'low'},
                     text=p.get('text'),
                     enforce_json=True,
+                    temperature=0.0,
                 )
                 try:
                     d2 = _json.loads(content2) if content2 else None
@@ -328,11 +332,12 @@ class QuerySystem:
                     content3, _ = call_chat_completion(
                         self.openai_client,
                         messages=[{"role": "user", "content": prompt}],
-                        model='gpt-5',
+                        model='gpt-4o',
                         max_tokens=p['max_tokens'],
                         reasoning={'effort': 'low'},
                         text=p.get('text'),
                         enforce_json=True,
+                        temperature=0.0,
                     )
                     try:
                         d3 = _json.loads(content3) if content3 else None
@@ -443,12 +448,12 @@ class QuerySystem:
                 used_embedding_intent = False
         
         # Always complement with keyword matching (union), to improve recall
-        category_keywords = getattr(self.config.analysis, 'category_keywords', {})
+        category_keywords = getattr(self.config.analysis, 'category_keywords', {}) or {}
         for category, keywords in category_keywords.items():
             if any(keyword in question_lower for keyword in keywords):
                 if category not in analysis['categories']:
                     analysis['categories'].append(category)
-        aggregation_patterns = getattr(self.config.analysis, 'aggregation_patterns', {})
+        aggregation_patterns = getattr(self.config.analysis, 'aggregation_patterns', {}) or {}
         for agg_type, patterns in aggregation_patterns.items():
             if any(pattern in question_lower for pattern in patterns):
                 if agg_type not in analysis['aggregations']:
@@ -463,7 +468,7 @@ class QuerySystem:
             analysis['query_type'] = 'analytical'
         
         # Detect time references (from config)
-        time_patterns = getattr(self.config.analysis, 'time_patterns', [])
+        time_patterns = getattr(self.config.analysis, 'time_patterns', []) or []
         for pattern in time_patterns:
             if pattern in question_lower:
                 analysis['time_references'].append(pattern)
@@ -478,6 +483,10 @@ class QuerySystem:
             # 1. SQL-based search for metrics with enhanced queries
             sql_results = self._enhanced_sql_search(analysis)
             results.extend(sql_results)
+            
+            # 1b. SQL-based search over Silver facts for row-level versatility
+            silver_results = self._silver_sql_search(analysis)
+            results.extend(silver_results)
             
             # 2. Proper FAISS vector similarity search
             vector_results = self._faiss_vector_search(question, analysis)
@@ -651,6 +660,153 @@ class QuerySystem:
         except Exception as e:
             logger.error(f"Error in enhanced SQL search: {e}")
             return []
+
+    def _silver_sql_search(self, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Search Silver fact tables to answer non-metric questions (row-level).
+
+        Returns a list of results compatible with downstream answer generation.
+        Individual fact rows are returned with type 'sql_metric' to integrate
+        with existing paths. Aggregated fact summaries are returned with type
+        'sql_aggregated_metric'.
+        """
+        try:
+            results: List[Dict[str, Any]] = []
+            allowed = {
+                'community_engagement': 'fact_volunteering',
+                'charitable_giving': 'fact_donations',
+            }
+            cats = analysis.get('categories') or []
+            # If no categories detected, consider both to improve recall for descriptive/analytical
+            query_cats = [c for c in cats if c in allowed] or list(allowed.keys())
+
+            import sqlite3
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+
+                for cat in query_cats:
+                    fact = allowed[cat]
+                    if fact == 'fact_volunteering':
+                        # Individual rows
+                        cur.execute(
+                            """
+                            SELECT v.fact_id, v.hours, v.unit, v.bronze_table, v.bronze_row_ids,
+                                   d.date_value AS date,
+                                   p.external_ref AS person_ref,
+                                   s.site_code AS site_code
+                            FROM fact_volunteering v
+                            LEFT JOIN dim_date d ON d.date_key = v.date_key
+                            LEFT JOIN dim_person p ON p.person_id = v.person_id
+                            LEFT JOIN dim_site s ON s.site_id = v.site_id
+                            ORDER BY v.hours DESC
+                            LIMIT 50
+                            """
+                        )
+                        for row in cur.fetchall():
+                            data = dict(row)
+                            # Attempt to fetch source file + cell reference from Bronze
+                            filename = None; sheet_name = None; cell_ref = None
+                            try:
+                                bronze_table = data.get('bronze_table')
+                                rid = int(str(data.get('bronze_row_ids') or '0'))
+                                if bronze_table and rid > 0:
+                                    q = f"SELECT source_file, sheet_name, row_cell_ref FROM {bronze_table} WHERE bronze_id = ?"
+                                    cur2 = conn.execute(q, (rid,))
+                                    r2 = cur2.fetchone()
+                                    if r2:
+                                        filename = r2[0]; sheet_name = r2[1]; cell_ref = r2[2]
+                            except Exception:
+                                pass
+                            results.append({
+                                'type': 'sql_metric',
+                                'relevance_score': 0.88,
+                                'data': {
+                                    'metric_name': 'volunteer_hours',
+                                    'metric_value': float(data.get('hours') or 0.0),
+                                    'metric_unit': data.get('unit') or 'hours',
+                                    'metric_category': 'community_engagement',
+                                    'context_description': 'silver_row',
+                                    'source_sheet_name': sheet_name,
+                                    'source_cell_reference': cell_ref,
+                                    'filename': filename,
+                                }
+                            })
+                        # Aggregated summary
+                        cur.execute("SELECT SUM(hours) AS total_value, COUNT(*) AS cnt FROM fact_volunteering")
+                        agg = cur.fetchone()
+                        if agg and (agg['total_value'] is not None):
+                            results.append({
+                                'type': 'sql_aggregated_metric',
+                                'relevance_score': 0.96,
+                                'data': {
+                                    'metric_category': 'community_engagement',
+                                    'metric_name': 'total_volunteer_hours_silver',
+                                    'total_value': float(agg['total_value'] or 0.0),
+                                    'metric_unit': 'hours',
+                                    'count': int(agg['cnt'] or 0),
+                                }
+                            })
+                    elif fact == 'fact_donations':
+                        # Individual rows
+                        cur.execute(
+                            """
+                            SELECT d2.fact_id, d2.amount, d2.currency, d2.bronze_table, d2.bronze_row_ids,
+                                   dt.date_value AS date,
+                                   s.site_code AS site_code
+                            FROM fact_donations d2
+                            LEFT JOIN dim_date dt ON dt.date_key = d2.date_key
+                            LEFT JOIN dim_site s ON s.site_id = d2.site_id
+                            ORDER BY d2.amount DESC
+                            LIMIT 50
+                            """
+                        )
+                        for row in cur.fetchall():
+                            data = dict(row)
+                            filename = None; sheet_name = None; cell_ref = None
+                            try:
+                                bronze_table = data.get('bronze_table')
+                                rid = int(str(data.get('bronze_row_ids') or '0'))
+                                if bronze_table and rid > 0:
+                                    q = f"SELECT source_file, sheet_name, row_cell_ref FROM {bronze_table} WHERE bronze_id = ?"
+                                    cur2 = conn.execute(q, (rid,))
+                                    r2 = cur2.fetchone()
+                                    if r2:
+                                        filename = r2[0]; sheet_name = r2[1]; cell_ref = r2[2]
+                            except Exception:
+                                pass
+                            results.append({
+                                'type': 'sql_metric',
+                                'relevance_score': 0.88,
+                                'data': {
+                                    'metric_name': 'donation_amount',
+                                    'metric_value': float(data.get('amount') or 0.0),
+                                    'metric_unit': data.get('currency') or 'GBP',
+                                    'metric_category': 'charitable_giving',
+                                    'context_description': 'silver_row',
+                                    'source_sheet_name': sheet_name,
+                                    'source_cell_reference': cell_ref,
+                                    'filename': filename,
+                                }
+                            })
+                        # Aggregated summary (by currency)
+                        cur.execute("SELECT currency, SUM(amount) AS total_value, COUNT(*) AS cnt FROM fact_donations GROUP BY currency")
+                        for agg in cur.fetchall():
+                            results.append({
+                                'type': 'sql_aggregated_metric',
+                                'relevance_score': 0.96,
+                                'data': {
+                                    'metric_category': 'charitable_giving',
+                                    'metric_name': 'total_donations_silver',
+                                    'total_value': float(agg['total_value'] or 0.0),
+                                    'metric_unit': agg['currency'] or 'GBP',
+                                    'count': int(agg['cnt'] or 0),
+                                }
+                            })
+
+            return results
+        except Exception as e:
+            logger.error(f"Error in Silver SQL search: {e}")
+            return []
     
     def _faiss_vector_search(self, question: str, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Proper FAISS vector similarity search."""
@@ -802,14 +958,20 @@ class QuerySystem:
                 framework_text = f" | Frameworks: {'; '.join(frameworks)}" if frameworks else ""
                 cell_ref = self._format_cell_reference(data)
                 
-                verification_status = data.get('verification_status', 'pending')
+                verification_status = (data.get('verification_status') or 'pending')
                 status_indicator = "✓" if verification_status == 'verified' else "⚠" if verification_status == 'failed' else "?"
+                # Confidence may be absent for Silver/vector-derived rows
+                conf_val = data.get('extraction_confidence')
+                try:
+                    conf_text = f"{float(conf_val):.2f}" if conf_val is not None else "N/A"
+                except Exception:
+                    conf_text = "N/A"
                 
                 context_parts.append(
                     f"[{len(context_parts)+1}] {data['metric_category'].title()}: {data['metric_name']} = "
-                    f"{data['metric_value']} {data['metric_unit']} {status_indicator} "
+                    f"{data.get('metric_value', 'N/A')} {data.get('metric_unit', '')} {status_indicator} "
                     f"(Source: {data['filename']} | {cell_ref} | "
-                    f"Confidence: {data['extraction_confidence']:.2f}{framework_text})"
+                    f"Confidence: {conf_text}{framework_text})"
                 )
             
             # Include vector results to ensure GPT has context even when SQL-based results are absent
@@ -894,7 +1056,7 @@ class QuerySystem:
             if escalate:
                 logger.info(f"Escalating answer synthesis due to: {reason}")
                 high_params = base_params.copy()
-                high_params['model'] = 'gpt-5'
+                high_params['model'] = 'gpt-4o'
                 high_params['max_tokens'] = max(4000, base_params.get('max_tokens', 2000))
                 high_params['reasoning'] = {'effort': 'high'}
                 content2, meta2 = call_chat_completion(
@@ -918,7 +1080,7 @@ class QuerySystem:
             if graph_requested:
                 answer = self._sanitize_graph_language(answer)
             self._last_answer_model = used_model
-            return answer
+            return answer or self._generate_fallback_answer(question, results)
         except Exception as e:
             logger.error(f"Error generating GPT answer: {e}")
             return self._generate_fallback_answer(question, results)
@@ -1252,11 +1414,47 @@ class QuerySystem:
             logger.debug(f"Failed to build chart data: {e}")
             return None
 
-    def query_structured(self, question: str, force_chart: Optional[bool] = None) -> Dict[str, Any]:
+    def _resolve_timezone_today(self) -> date:
+        """Compute 'today' using tenant or global timezone. Fallback to TZ_DEFAULT env or UTC-like naive date.
+        Returns a date (YYYY-MM-DD local to chosen tz).
+        """
+        try:
+            tz_name = os.getenv('TIMEZONE') or os.getenv('TZ_DEFAULT') or 'UTC'
+            import zoneinfo  # Python 3.9+
+            tz = zoneinfo.ZoneInfo(tz_name)
+            now = datetime.now(tz)
+            return now.date()
+        except Exception:
+            return datetime.now().date()
+
+    def _resolve_time_policy(self, question: str) -> Dict[str, Any]:
+        cfg = {'fy_start_month': int(os.getenv('FY_START_MONTH') or 4), 'fy_start_day': int(os.getenv('FY_START_DAY') or 1)}
+        today = self._resolve_timezone_today()
+        tp = parse_time_phrase(question, cfg, today=today)
+        # Telemetry/debug logging of decision
+        try:
+            logger.info(f"time_policy_decision: phrase='{question}' -> {tp}")
+        except Exception:
+            pass
+        return tp
+
+    def query_structured(self, question: str, force_chart: Optional[bool] = None, debug_time: bool = False) -> Dict[str, Any]:
         """Process query and return a structured response with optional chart data.
         Keys: answer (str), show_chart (bool), chart (dict or None).
         """
         logger.info(f"Processing structured query: {question}")
+        # Resolve time phrase once and pass to planner/IR (model must not change dates)
+        time_policy = self._resolve_time_policy(question)
+        if debug_time:
+            print(f"[time] window: {time_policy}")
+
+        # Generate IR deterministically (low temp) and validate/repair once
+        try:
+            ir_obj, ir_meta = generate_ir_with_validation(self.openai_client, question, [], time_policy)
+        except Exception as e:
+            ir_obj = None
+            logger.info(f"IR generation failed gracefully: {e}")
+
         # Analyze and retrieve results using existing pipeline
         analysis = self._analyze_query(question)
         if not analysis.get('intent_confident', False):
@@ -1294,10 +1492,17 @@ class QuerySystem:
         return {
             'answer': answer,
             'show_chart': bool(want_chart),
-            'chart': chart_payload
+            'chart': chart_payload,
+            'time_window': {
+                'start': time_policy.get('start'),
+                'end': time_policy.get('end'),
+                'label': time_policy.get('label'),
+                'policy_id': time_policy.get('policy_id'),
+                'fiscal_used': time_policy.get('fiscal_used'),
+            }
         }
 
-    def query_structured_instrumented(self, question: str, force_chart: Optional[bool] = None) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[str]]:
+    def query_structured_instrumented(self, question: str, force_chart: Optional[bool] = None, debug_time: bool = False) -> Tuple[Dict[str, Any], Dict[str, Any], Optional[str]]:
         """Like query_structured, but also returns a timings dict and used model.
 
         Returns tuple: (structured_response, timings, model_used)
@@ -1307,6 +1512,11 @@ class QuerySystem:
         timings: Dict[str, Any] = {}
         t0 = time.monotonic()
         logger.info(f"Processing structured query (instrumented): {question}")
+
+        # Resolve time policy first
+        time_policy = self._resolve_time_policy(question)
+        if debug_time:
+            print(f"[time] window: {time_policy}")
 
         # Analyze
         t = time.monotonic()
@@ -1327,10 +1537,24 @@ class QuerySystem:
                     'answer': "I'm not sure what you wanted. Please rephrase your question.",
                     'show_chart': False,
                     'chart': None,
+                    'time_window': {
+                        'start': time_policy.get('start'),
+                        'end': time_policy.get('end'),
+                        'label': time_policy.get('label'),
+                        'policy_id': time_policy.get('policy_id'),
+                        'fiscal_used': time_policy.get('fiscal_used'),
+                    }
                 },
                 timings,
                 getattr(self, '_last_answer_model', None),
             )
+
+        # Generate IR deterministically (low temp) and validate/repair once
+        try:
+            ir_obj, ir_meta = generate_ir_with_validation(self.openai_client, question, [], time_policy)
+        except Exception as e:
+            ir_obj = None
+            logger.info(f"IR generation failed gracefully: {e}")
 
         # Search
         t = time.monotonic()
@@ -1378,7 +1602,14 @@ class QuerySystem:
         structured = {
             'answer': answer,
             'show_chart': bool(want_chart),
-            'chart': chart_payload
+            'chart': chart_payload,
+            'time_window': {
+                'start': time_policy.get('start'),
+                'end': time_policy.get('end'),
+                'label': time_policy.get('label'),
+                'policy_id': time_policy.get('policy_id'),
+                'fiscal_used': time_policy.get('fiscal_used'),
+            }
         }
         model_used = getattr(self, '_last_answer_model', None)
         return structured, timings, model_used
