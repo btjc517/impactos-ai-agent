@@ -277,12 +277,16 @@ async def query_data_endpoint(request: QueryRequest):
         logger.info(f"Processing web API query: {request.question}")
         
         
-        # Process the query using structured response (answer + optional chart)
-        from query import QuerySystem
-        qs = QuerySystem(cli.db_path)
-        structured = qs.query_structured(request.question, force_chart=request.force_chart)
-        answer = structured.get('answer', '')
-        chart = structured.get('chart')
+        # Process the query using GPT Assistant system for structured response
+        from main_gpt import ImpactOSGPTCLI
+        gpt_cli = ImpactOSGPTCLI()
+        try:
+            structured = gpt_cli.query_structured(request.question, force_chart=request.force_chart)
+            answer = structured.get('answer', '')
+            chart = structured.get('chart')
+        finally:
+            # Ensure cleanup of GPT resources
+            gpt_cli.cleanup()
         
         # Get accuracy summary if requested
         accuracy_summary = None
@@ -300,7 +304,7 @@ async def query_data_endpoint(request: QueryRequest):
                 question=request.question,
                 answer=answer,
                 status="ok",
-                model="gpt-4",  # Based on structured query response
+                model="gpt-assistant",  # Using GPT Assistant system
                 total_ms=total_ms,
                 timings={"total_ms": total_ms, "web_api_processing_ms": total_ms},
                 chart=chart,
