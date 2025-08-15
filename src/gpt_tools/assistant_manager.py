@@ -662,6 +662,8 @@ class AssistantManager:
         try:
             import re
             
+            logger.debug(f"Parsing chart data from content. Chart type: {chart_type}")
+            
             # Look for numerical data patterns in the content
             data_rows = []
             unit = None
@@ -710,7 +712,44 @@ class AssistantManager:
                     unit = 'hours'
                     metric_name = 'Total Volunteering Hours'
             
-            # Pattern 3: Generic numerical data with units
+            # Pattern 3: Financial/donation data
+            elif ('donation' in content.lower() or 'contribution' in content.lower() or 
+                  '£' in content or 'giving' in content.lower()):
+                # Extract donation amounts by year or person
+                # Look for patterns like "£461.45", "donations of £133.4", "contributions of £214.96"
+                donation_pattern = r'£(\d+(?:\.\d+)?)'
+                donation_matches = re.findall(donation_pattern, content)
+                
+                # Also look for year patterns combined with donations
+                year_donation_pattern = r'(\d{4}).*?£(\d+(?:\.\d+)?)'
+                year_matches = re.findall(year_donation_pattern, content)
+                
+                if year_matches:
+                    # Group by year and sum donations
+                    year_totals = {}
+                    for year, amount in year_matches:
+                        year_totals[year] = year_totals.get(year, 0) + float(amount)
+                    
+                    for year, total in sorted(year_totals.items()):
+                        data_rows.append({
+                            'label': year,
+                            'value': total
+                        })
+                    unit = '£'
+                    metric_name = 'Donations'
+                
+                elif donation_matches:
+                    # If no year data, just use top donation amounts
+                    amounts = sorted([float(amt) for amt in donation_matches], reverse=True)[:5]
+                    for i, amount in enumerate(amounts):
+                        data_rows.append({
+                            'label': f'Donation {i+1}',
+                            'value': amount
+                        })
+                    unit = '£'
+                    metric_name = 'Top Donations'
+            
+            # Pattern 4: Generic numerical data with units
             else:
                 # Look for any number with units pattern
                 number_pattern = r'(\d+(?:\.\d+)?)\s*(hours|£|GBP|%|people|employees|days)'
@@ -726,6 +765,7 @@ class AssistantManager:
                             unit = found_unit
             
             if data_rows:
+                logger.debug(f"Successfully parsed {len(data_rows)} data points")
                 return {
                     'x_key': 'label',
                     'series': [
@@ -748,6 +788,8 @@ class AssistantManager:
                         'chart_type': chart_type
                     }
                 }
+            else:
+                logger.debug("No data rows found in content")
             
             return None
             
