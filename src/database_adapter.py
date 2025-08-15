@@ -12,11 +12,21 @@ from typing import Optional, Dict, Any, List
 from urllib.parse import urlparse
 
 try:
-    import psycopg2
-    import psycopg2.extras
+    # Try psycopg3 first (modern, Python 3.13 compatible)
+    import psycopg
+    import psycopg.rows
     POSTGRES_AVAILABLE = True
+    PSYCOPG_VERSION = 3
 except ImportError:
-    POSTGRES_AVAILABLE = False
+    try:
+        # Fall back to psycopg2 for older environments
+        import psycopg2
+        import psycopg2.extras
+        POSTGRES_AVAILABLE = True
+        PSYCOPG_VERSION = 2
+    except ImportError:
+        POSTGRES_AVAILABLE = False
+        PSYCOPG_VERSION = None
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +64,21 @@ class DatabaseAdapter:
         try:
             if self.db_type == 'postgresql':
                 if not POSTGRES_AVAILABLE:
-                    raise ImportError("PostgreSQL dependencies not available. Install psycopg2-binary.")
+                    raise ImportError("PostgreSQL dependencies not available. Install psycopg[binary] or psycopg2-binary.")
                 
-                self.connection = psycopg2.connect(
-                    self.connection_string,
-                    cursor_factory=psycopg2.extras.RealDictCursor
-                )
-                logger.info("Connected to PostgreSQL database")
+                if PSYCOPG_VERSION == 3:
+                    # psycopg3 connection
+                    self.connection = psycopg.connect(
+                        self.connection_string,
+                        row_factory=psycopg.rows.dict_row
+                    )
+                else:
+                    # psycopg2 connection
+                    self.connection = psycopg2.connect(
+                        self.connection_string,
+                        cursor_factory=psycopg2.extras.RealDictCursor
+                    )
+                logger.info(f"Connected to PostgreSQL database (psycopg v{PSYCOPG_VERSION})")
                 
             else:  # SQLite
                 self.connection = sqlite3.connect(self.connection_string)
@@ -168,7 +186,12 @@ class DatabaseAdapter:
             cursor = self.connection.cursor()
             
             if self.db_type == 'postgresql':
-                psycopg2.extras.execute_batch(cursor, query, params_list)
+                if PSYCOPG_VERSION == 3:
+                    # psycopg3 uses cursor.executemany for batch operations
+                    cursor.executemany(query, params_list)
+                else:
+                    # psycopg2 batch execution
+                    psycopg2.extras.execute_batch(cursor, query, params_list)
             else:  # SQLite
                 cursor.executemany(query, params_list)
             
