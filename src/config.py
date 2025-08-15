@@ -53,8 +53,9 @@ class QueryProcessingConfig:
     
     # GPT-4 Processing limits
     gpt4_max_tokens: int = 2000  # Increased from 1000 for comprehensive answers
-    gpt4_temperature: float = 0.1
-    gpt4_model: str = "gpt-4"
+    gpt4_temperature: float = 0.05  # Ultra-low for maximum consistency in citations and framework mapping
+    gpt4_top_p: float = 0.1  # Very focused nucleus sampling for deterministic responses
+    gpt4_model: str = "gpt-4o"  # More cost-effective than gpt-4-turbo
     
     # Result filtering
     enable_intelligent_filtering: bool = True

@@ -37,6 +37,7 @@ from schema import DatabaseSchema
 from frameworks import get_framework_report, apply_framework_mappings
 from verify import verify_all_data, verify_metric
 from config import get_config
+from database_adapter import DatabaseAdapter, get_database_connection
 
 # Testing infrastructure imports (with try/except for optional functionality)
 try:
@@ -166,6 +167,7 @@ class VectorSearchResponse(BaseModel):
 
 # Initialize ImpactOS CLI instance
 impactos_cli = None
+web_db_adapter = None
 
 def get_cli_instance():
     """Get or create ImpactOS CLI instance."""
@@ -173,6 +175,15 @@ def get_cli_instance():
     if impactos_cli is None:
         impactos_cli = ImpactOSCLI()
     return impactos_cli
+
+def get_db_adapter() -> DatabaseAdapter:
+    """Get or create database adapter instance for web API."""
+    global web_db_adapter
+    if web_db_adapter is None:
+        connection_string = get_database_connection()
+        web_db_adapter = DatabaseAdapter(connection_string)
+        web_db_adapter.connect()
+    return web_db_adapter
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -257,31 +268,78 @@ async def query_data_endpoint(request: QueryRequest):
     
     This is the main endpoint your web portal query bar should use.
     """
+    import time
+    start_time = time.time()
+    
     try:
         cli = get_cli_instance()
         
         logger.info(f"Processing web API query: {request.question}")
+        
         
         # Process the query using structured response (answer + optional chart)
         from query import QuerySystem
         qs = QuerySystem(cli.db_path)
         structured = qs.query_structured(request.question, force_chart=request.force_chart)
         answer = structured.get('answer', '')
+        chart = structured.get('chart')
         
         # Get accuracy summary if requested
         accuracy_summary = None
         if request.show_accuracy:
             accuracy_summary = cli.get_verification_summary()
         
+        # Calculate processing time
+        total_ms = int((time.time() - start_time) * 1000)
+        
+        # Log comprehensive AI query event
+        try:
+            db_adapter = get_db_adapter()
+            db_adapter.log_ai_query_event(
+                source="render",
+                question=request.question,
+                answer=answer,
+                status="ok",
+                model="gpt-4",  # Based on structured query response
+                total_ms=total_ms,
+                timings={"total_ms": total_ms, "web_api_processing_ms": total_ms},
+                chart=chart,
+                metadata={
+                    "interface": "web_api", 
+                    "system": "impactos-ai",
+                    "show_accuracy": request.show_accuracy,
+                    "force_chart": request.force_chart,
+                    "show_chart": structured.get('show_chart', False)
+                }
+            )
+        except Exception as e:
+            logger.debug(f"Failed to log AI query event: {e}")
+        
         return QueryResponse(
             answer=answer,
             accuracy_summary=accuracy_summary,
             show_chart=structured.get('show_chart', False),
-            chart=structured.get('chart')
+            chart=chart
         )
         
     except Exception as e:
         logger.error(f"Error processing query: {e}")
+        total_ms = int((time.time() - start_time) * 1000)
+        
+        # Log error event
+        try:
+            db_adapter = get_db_adapter()
+            db_adapter.log_ai_query_event(
+                source="render",
+                question=request.question,
+                status="error",
+                total_ms=total_ms,
+                error=str(e),
+                metadata={"interface": "web_api", "system": "impactos-ai"}
+            )
+        except Exception as log_e:
+            logger.debug(f"Failed to log error event: {log_e}")
+        
         raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
 
 @app.post("/ingest", response_model=IngestionResponse)

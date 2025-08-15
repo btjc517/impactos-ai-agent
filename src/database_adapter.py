@@ -209,6 +209,115 @@ class DatabaseAdapter:
             logger.error(f"Failed to create tables: {e}")
             raise
     
+    def log_query(self, source: str, question: str) -> bool:
+        """
+        Log a query to the query_logs table.
+        
+        Args:
+            source: Query source ('cli', 'render', 'query_system', etc.)
+            question: The natural language question asked
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            query = """
+                INSERT INTO query_logs (source, question, timestamp)
+                VALUES (?, ?, ?)
+            """ if self.db_type == 'sqlite' else """
+                INSERT INTO query_logs (source, question, timestamp)
+                VALUES (%s, %s, %s)
+            """
+            
+            from datetime import datetime
+            params = (source, question, datetime.now().isoformat())
+            
+            self.execute_update(query, params)
+            logger.debug(f"Logged query from {source}: {question[:50]}...")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to log query: {e}")
+            return False
+    
+    def log_ai_query_event(self, source: str, question: str, answer: str = None, 
+                          status: str = 'ok', model: str = None, total_ms: int = None,
+                          timings: dict = None, chart: dict = None, logs: str = None,
+                          error: str = None, user_id: str = None, session_id: str = None,
+                          metadata: dict = None) -> bool:
+        """
+        Log a comprehensive AI query event to the ai_query_events table.
+        
+        Args:
+            source: Query source ('cli', 'render', 'query_system', etc.)
+            question: The natural language question asked
+            answer: The AI-generated answer
+            status: Query status ('ok', 'error', etc.)
+            model: Model used for generation
+            total_ms: Total processing time in milliseconds
+            timings: Detailed timing breakdown
+            chart: Chart data if generated
+            logs: Processing logs
+            error: Error message if failed
+            user_id: User identifier
+            session_id: Session identifier
+            metadata: Additional metadata
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Only log to ai_query_events if we're using PostgreSQL/Supabase
+            if self.db_type != 'postgresql':
+                logger.debug(f"Skipping ai_query_events logging for {self.db_type}")
+                return True
+                
+            import uuid
+            import json
+            from datetime import datetime
+            
+            # Generate UUID for the event
+            event_id = str(uuid.uuid4())
+            
+            # Convert dict parameters to JSON strings
+            timings_json = json.dumps(timings) if timings else None
+            chart_json = json.dumps(chart) if chart else None
+            metadata_json = json.dumps(metadata) if metadata else None
+            
+            query = """
+                INSERT INTO ai_query_events (
+                    id, created_at, source, user_id, session_id, question, answer,
+                    status, model, total_ms, timings, chart, logs, error, metadata
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """
+            
+            params = (
+                event_id,
+                datetime.now().isoformat(),
+                source,
+                user_id,
+                session_id,
+                question,
+                answer,
+                status,
+                model,
+                total_ms,
+                timings_json,
+                chart_json,
+                logs,
+                error,
+                metadata_json
+            )
+            
+            self.execute_update(query, params)
+            logger.debug(f"Logged AI query event from {source}: {question[:50]}...")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to log AI query event: {e}")
+            return False
+    
     def _create_postgresql_tables(self):
         """Create PostgreSQL tables with appropriate data types."""
         tables = [
@@ -263,6 +372,14 @@ class DatabaseAdapter:
                 target_date DATE,
                 status VARCHAR(50) DEFAULT 'active',
                 created_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS query_logs (
+                id SERIAL PRIMARY KEY,
+                source VARCHAR(50) NOT NULL,
+                question TEXT NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         ]
@@ -324,6 +441,14 @@ class DatabaseAdapter:
                 target_date DATE,
                 status TEXT DEFAULT 'active',
                 created_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS query_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                question TEXT NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
             """
         ]

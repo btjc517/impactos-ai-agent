@@ -12,6 +12,8 @@ from pathlib import Path
 import logging
 from typing import Optional
 import sqlite3
+import json
+from datetime import datetime
 
 # Disable tokenizer parallelism warnings/deadlocks by default
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
@@ -20,6 +22,7 @@ os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 sys.path.append(os.path.join(os.path.dirname(__file__)))
 
 from schema import initialize_database, DatabaseSchema
+from database_adapter import DatabaseAdapter, get_database_connection
 
 # Setup logging
 logging.basicConfig(
@@ -36,6 +39,7 @@ class ImpactOSCLI:
         """Initialize CLI with database connection."""
         self.db_path = os.getenv('IMPACTOS_DB_PATH', 'db/impactos.db')
         self.db_schema = DatabaseSchema(self.db_path)
+        self.db_adapter = None  # Will be initialized when needed
         self.ensure_database_initialized()
     
     def ensure_database_initialized(self):
@@ -45,6 +49,14 @@ class ImpactOSCLI:
             self.db_schema.initialize_database()
         else:
             logger.info(f"Database found at {self.db_path}")
+    
+    def _get_db_adapter(self) -> DatabaseAdapter:
+        """Get or create database adapter instance."""
+        if self.db_adapter is None:
+            connection_string = get_database_connection()
+            self.db_adapter = DatabaseAdapter(connection_string)
+            self.db_adapter.connect()
+        return self.db_adapter
     
     def ingest_data(self, file_path: str, file_type: Optional[str] = None) -> bool:
         """
@@ -94,18 +106,58 @@ class ImpactOSCLI:
         Returns:
             Answer with citations
         """
+        import time
+        start_time = time.time()
+        
         try:
             logger.info(f"Processing query: {question}")
+            
             
             # Import and use query system
             from query import query_data
             answer = query_data(question, self.db_path)
             
+            # Calculate processing time
+            total_ms = int((time.time() - start_time) * 1000)
+            
+            # Log comprehensive AI query event
+            try:
+                db_adapter = self._get_db_adapter()
+                db_adapter.log_ai_query_event(
+                    source="cli",
+                    question=question,
+                    answer=answer,
+                    status="ok",
+                    model="gpt-4",  # Assuming GPT-4 based on query.py
+                    total_ms=total_ms,
+                    timings={"total_ms": total_ms, "query_processing_ms": total_ms},
+                    metadata={"interface": "cli", "system": "impactos-ai"}
+                )
+            except Exception as e:
+                logger.debug(f"Failed to log AI query event: {e}")
+            
             return answer
             
         except Exception as e:
             logger.error(f"Error during query: {e}")
-            return f"Error processing query: {e}"
+            error_msg = f"Error processing query: {e}"
+            total_ms = int((time.time() - start_time) * 1000)
+            
+            # Log error event
+            try:
+                db_adapter = self._get_db_adapter()
+                db_adapter.log_ai_query_event(
+                    source="cli",
+                    question=question,
+                    status="error",
+                    total_ms=total_ms,
+                    error=str(e),
+                    metadata={"interface": "cli", "system": "impactos-ai"}
+                )
+            except Exception as log_e:
+                logger.debug(f"Failed to log error event: {log_e}")
+            
+            return error_msg
     
     def show_schema_info(self):
         """Display database schema information."""

@@ -27,6 +27,7 @@ from schema import DatabaseSchema
 from frameworks import FrameworkMapper
 from vector_search import FAISSVectorSearch
 from config import get_config, get_config_manager
+from database_adapter import DatabaseAdapter, get_database_connection
 
 # Setup logging is configured at the entrypoint; avoid per-module basicConfig
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class QuerySystem:
         self.db_path = db_path
         self.db_schema = DatabaseSchema(db_path)
         self.framework_mapper = FrameworkMapper(db_path)
+        self.db_adapter = None  # Will be initialized when needed
         
         # Initialize AI components
         self.openai_client = self._initialize_openai()
@@ -70,6 +72,14 @@ class QuerySystem:
         except Exception as e:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             return None
+    
+    def _get_db_adapter(self) -> DatabaseAdapter:
+        """Get or create database adapter instance."""
+        if self.db_adapter is None:
+            connection_string = get_database_connection()
+            self.db_adapter = DatabaseAdapter(connection_string)
+            self.db_adapter.connect()
+        return self.db_adapter
     
     def _build_answer_cache_key(self, question: str, results: List[Dict[str, Any]]) -> str:
         """Create a stable cache key from question and top source filenames."""
@@ -178,20 +188,49 @@ class QuerySystem:
         Returns:
             Answer with citations
         """
+        import time
+        start_time = time.time()
+        
         try:
             logger.info(f"Processing query: {question}")
             
+            
             # Answer cache check (quick return on repeats)
-            # Build a provisional key using question only; later include sources
             provisional_key = question.strip().lower()
             if provisional_key in self._answer_cache:
-                return self._answer_cache[provisional_key]
+                cached_answer = self._answer_cache[provisional_key]
+                total_ms = int((time.time() - start_time) * 1000)
+                
+                # Log cached query event
+                try:
+                    db_adapter = self._get_db_adapter()
+                    db_adapter.log_ai_query_event(
+                        source="query_system",
+                        question=question,
+                        answer=cached_answer,
+                        status="ok",
+                        model="cached",
+                        total_ms=total_ms,
+                        timings={"total_ms": total_ms, "cached": True},
+                        metadata={"interface": "query_system", "system": "impactos-ai", "cached": True}
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to log cached query event: {e}")
+                
+                return cached_answer
+            
+            # Track detailed timings
+            timings = {"start_time": start_time}
             
             # 1. Analyze query intent and extract key terms
+            analysis_start = time.time()
             query_analysis = self._analyze_query(question)
+            timings["analysis_ms"] = int((time.time() - analysis_start) * 1000)
             
             # 2. Perform enhanced hybrid search with intelligent limits
+            search_start = time.time()
             results = self._enhanced_hybrid_search(question, query_analysis)
+            timings["search_ms"] = int((time.time() - search_start) * 1000)
             
             logger.info(f"Retrieved {len(results)} total relevant results")
             
@@ -201,30 +240,99 @@ class QuerySystem:
                 cache_key = self._build_answer_cache_key(question, results)
                 self._answer_cache[cache_key] = direct_answer
                 self._answer_cache[provisional_key] = direct_answer
+                
+                total_ms = int((time.time() - start_time) * 1000)
+                timings["total_ms"] = total_ms
+                
+                # Log SQL direct answer event
+                try:
+                    db_adapter = self._get_db_adapter()
+                    db_adapter.log_ai_query_event(
+                        source="query_system",
+                        question=question,
+                        answer=direct_answer,
+                        status="ok",
+                        model="sql-direct",
+                        total_ms=total_ms,
+                        timings=timings,
+                        metadata={"interface": "query_system", "system": "impactos-ai", "method": "sql_direct"}
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to log SQL direct query event: {e}")
+                
                 logger.info("Returning SQL-first deterministic answer (no GPT)")
                 return direct_answer
             
             # 3. Intelligent filtering and summarization for GPT-4
+            filter_start = time.time()
             filtered_results = self._intelligent_filter_for_gpt(results, query_analysis)
+            timings["filter_ms"] = int((time.time() - filter_start) * 1000)
             
             logger.info(f"Filtered to {len(filtered_results)} results for GPT-4")
             
             # 4. Generate cited answer using GPT-4 (if available)
+            generation_start = time.time()
             if self.openai_client and filtered_results:
                 answer = self._generate_gpt_answer(question, filtered_results)
+                model_used = self.config.query_processing.gpt4_model
             else:
                 answer = self._generate_fallback_answer(question, results)
+                model_used = "fallback"
+            timings["generation_ms"] = int((time.time() - generation_start) * 1000)
             
             # Store in cache with stronger key after retrieval
             cache_key = self._build_answer_cache_key(question, results)
             self._answer_cache[cache_key] = answer
             self._answer_cache[provisional_key] = answer
+            
+            # Calculate total time and log comprehensive event
+            total_ms = int((time.time() - start_time) * 1000)
+            timings["total_ms"] = total_ms
+            
+            try:
+                db_adapter = self._get_db_adapter()
+                db_adapter.log_ai_query_event(
+                    source="query_system",
+                    question=question,
+                    answer=answer,
+                    status="ok",
+                    model=model_used,
+                    total_ms=total_ms,
+                    timings=timings,
+                    metadata={
+                        "interface": "query_system", 
+                        "system": "impactos-ai",
+                        "results_count": len(results),
+                        "filtered_results_count": len(filtered_results),
+                        "query_type": query_analysis.get("query_type")
+                    }
+                )
+            except Exception as e:
+                logger.debug(f"Failed to log AI query event: {e}")
+            
             logger.info("Query processing completed")
             return answer
             
         except Exception as e:
             logger.error(f"Error processing query: {e}")
-            return f"Error processing query: {e}"
+            error_msg = f"Error processing query: {e}"
+            total_ms = int((time.time() - start_time) * 1000)
+            
+            # Log error event
+            try:
+                db_adapter = self._get_db_adapter()
+                db_adapter.log_ai_query_event(
+                    source="query_system",
+                    question=question,
+                    status="error",
+                    total_ms=total_ms,
+                    error=str(e),
+                    metadata={"interface": "query_system", "system": "impactos-ai"}
+                )
+            except Exception as log_e:
+                logger.debug(f"Failed to log error event: {log_e}")
+            
+            return error_msg
     
     def _classify_intent_with_llm(self, question: str) -> Optional[Dict[str, Any]]:
         """Use a lightweight LLM to classify categories and aggregations.
@@ -627,6 +735,30 @@ class QuerySystem:
             logger.error(f"Error getting framework mappings: {e}")
             return []
     
+    def _get_framework_badges(self, metric_name: str, metric_category: str) -> str:
+        """Get compact framework badges for display."""
+        try:
+            mappings = self.framework_mapper.map_metric_to_frameworks(metric_name, metric_category)
+            badges = []
+            
+            for framework, codes in mappings.items():
+                if codes:
+                    # Take only first/primary mapping for compact display
+                    primary_code = codes[0]
+                    if framework == "UN_SDGS":
+                        badges.append(f"[SDG{primary_code}]")
+                    elif framework == "UK_SV_MODEL":
+                        badges.append(f"[{primary_code}]")
+                    elif framework == "TOMS":
+                        badges.append(f"[{primary_code}]")
+                    elif framework == "B_CORP":
+                        badges.append(f"[{primary_code.upper()}]")
+            
+            return " ".join(badges) if badges else ""
+        except Exception as e:
+            logger.error(f"Error getting framework badges: {e}")
+            return ""
+    
     def _format_cell_reference(self, data: Dict[str, Any]) -> str:
         """Format cell reference information for display."""
         parts = []
@@ -658,14 +790,20 @@ class QuerySystem:
             # Format aggregated results first (most important for aggregation queries)
             for i, result in enumerate(aggregated_results):
                 data = result['data']
+                # Get both detailed and compact framework info
                 frameworks = self._get_framework_mappings(
                     data.get('metric_name', ''), 
                     data.get('metric_category', '')
                 )
+                badges = self._get_framework_badges(
+                    data.get('metric_name', ''), 
+                    data.get('metric_category', '')
+                )
                 framework_text = f" | Frameworks: {'; '.join(frameworks)}" if frameworks else ""
+                badges_text = f" {badges}" if badges else ""
                 
                 context_parts.append(
-                    f"[{len(context_parts)+1}] AGGREGATED: {data['metric_category'].title()}: "
+                    f"[{len(context_parts)+1}] AGGREGATED{badges_text}: {data['metric_category'].title()}: "
                     f"Total {data['metric_name']} = {data['total_value']} {data['metric_unit']} "
                     f"(from {data['count']} records, avg: {data.get('avg_value', 'N/A')}) "
                     f"(Sources: {data.get('filenames', 'Unknown')}{framework_text})"
@@ -678,14 +816,19 @@ class QuerySystem:
                     data.get('metric_name', ''), 
                     data.get('metric_category', '')
                 )
+                badges = self._get_framework_badges(
+                    data.get('metric_name', ''), 
+                    data.get('metric_category', '')
+                )
                 framework_text = f" | Frameworks: {'; '.join(frameworks)}" if frameworks else ""
+                badges_text = f" {badges}" if badges else ""
                 cell_ref = self._format_cell_reference(data)
                 
                 verification_status = data.get('verification_status', 'pending')
                 status_indicator = "✓" if verification_status == 'verified' else "⚠" if verification_status == 'failed' else "?"
                 
                 context_parts.append(
-                    f"[{len(context_parts)+1}] {data['metric_category'].title()}: {data['metric_name']} = "
+                    f"[{len(context_parts)+1}]{badges_text} {data['metric_category'].title()}: {data['metric_name']} = "
                     f"{data['metric_value']} {data['metric_unit']} {status_indicator} "
                     f"(Source: {data['filename']} | {cell_ref} | "
                     f"Confidence: {data['extraction_confidence']:.2f}{framework_text})"
@@ -700,13 +843,18 @@ class QuerySystem:
                         data.get('metric_name', ''), 
                         data.get('metric_category', '')
                     )
+                    badges = self._get_framework_badges(
+                        data.get('metric_name', ''), 
+                        data.get('metric_category', '')
+                    )
                     framework_text = f" | Frameworks: {'; '.join(frameworks)}" if frameworks else ""
+                    badges_text = f" {badges}" if badges else ""
                     text_preview = (data.get('text_chunk') or data.get('text') or '')[:200]
                     filename = data.get('filename', 'Unknown')
                     category = (data.get('metric_category') or 'context').title()
                     
                     context_parts.append(
-                        f"[{len(context_parts)+1}] VECTOR: {category}: {text_preview}... "
+                        f"[{len(context_parts)+1}] VECTOR{badges_text}: {category}: {text_preview}... "
                         f"(Similarity: {similarity:.3f} | Source: {filename}{framework_text})"
                     )
             
@@ -751,6 +899,7 @@ class QuerySystem:
                 model=self.config.query_processing.gpt4_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=self.config.query_processing.gpt4_temperature,
+                top_p=getattr(self.config.query_processing, 'gpt4_top_p', 0.1),
                 max_tokens=self.config.query_processing.gpt4_max_tokens
             )
             
@@ -1096,21 +1245,39 @@ class QuerySystem:
         """Process query and return a structured response with optional chart data.
         Keys: answer (str), show_chart (bool), chart (dict or None).
         """
+        import time
+        start_time = time.time()
+        
         logger.info(f"Processing structured query: {question}")
+        
+        # Track detailed timings
+        timings = {"start_time": start_time}
+        
         # Analyze and retrieve results using existing pipeline
+        analysis_start = time.time()
         analysis = self._analyze_query(question)
+        timings["analysis_ms"] = int((time.time() - analysis_start) * 1000)
+        
+        search_start = time.time()
         results = self._enhanced_hybrid_search(question, analysis)
+        timings["search_ms"] = int((time.time() - search_start) * 1000)
         
         # Try deterministic answer first
+        generation_start = time.time()
         answer = self._try_sql_direct_answer(question, analysis, results)
+        model_used = "sql-direct"
         if not answer:
             filtered_results = self._intelligent_filter_for_gpt(results, analysis)
             if self.openai_client and filtered_results:
                 answer = self._generate_gpt_answer(question, filtered_results)
+                model_used = self.config.query_processing.gpt4_model
             else:
                 answer = self._generate_fallback_answer(question, results)
+                model_used = "fallback"
+        timings["generation_ms"] = int((time.time() - generation_start) * 1000)
         
         # Visualization intent and payload
+        chart_start = time.time()
         want_chart_default, suggested_type = self._detect_chart_intent(question, analysis)
         want_chart = force_chart if force_chart is not None else want_chart_default
         chart_payload = None
@@ -1124,6 +1291,34 @@ class QuerySystem:
             # If we wanted a chart but couldn't build one, disable
             if chart_payload is None:
                 want_chart = False
+        timings["chart_ms"] = int((time.time() - chart_start) * 1000)
+        
+        # Calculate total time and log comprehensive event
+        total_ms = int((time.time() - start_time) * 1000)
+        timings["total_ms"] = total_ms
+        
+        try:
+            db_adapter = self._get_db_adapter()
+            db_adapter.log_ai_query_event(
+                source="query_system_structured",
+                question=question,
+                answer=answer,
+                status="ok",
+                model=model_used,
+                total_ms=total_ms,
+                timings=timings,
+                chart=chart_payload,
+                metadata={
+                    "interface": "query_system_structured", 
+                    "system": "impactos-ai",
+                    "results_count": len(results),
+                    "query_type": analysis.get("query_type"),
+                    "show_chart": bool(want_chart),
+                    "chart_type": chart_payload.get('type') if chart_payload else None
+                }
+            )
+        except Exception as e:
+            logger.debug(f"Failed to log structured query event: {e}")
         
         return {
             'answer': answer,

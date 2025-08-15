@@ -13,6 +13,7 @@ from pathlib import Path
 import logging
 from typing import Optional, Dict, Any
 import json
+from datetime import datetime
 
 # Add src to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__)))
@@ -20,6 +21,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__)))
 from agents import AgentOrchestrator
 from gpt_tools import AssistantManager, FileManager, EmbeddingService
 from utils import get_config, setup_logging
+from database_adapter import DatabaseAdapter, get_database_connection
 
 # Setup logging and configuration
 setup_logging()
@@ -40,6 +42,7 @@ class ImpactOSGPTCLI:
         self.orchestrator = None
         self.assistant_manager = None
         self.file_manager = None
+        self.db_adapter = None  # Will be initialized when needed
         
         self._initialize_systems()
     
@@ -79,13 +82,22 @@ class ImpactOSGPTCLI:
             logger.error(f"System initialization failed: {e}")
             raise
     
-    def ingest_data(self, file_path: str, use_agents: bool = True) -> bool:
+    def _get_db_adapter(self) -> DatabaseAdapter:
+        """Get or create database adapter instance."""
+        if self.db_adapter is None:
+            connection_string = get_database_connection()
+            self.db_adapter = DatabaseAdapter(connection_string)
+            self.db_adapter.connect()
+        return self.db_adapter
+    
+    def ingest_data(self, file_path: str, use_agents: bool = True, skip_upload: bool = False) -> bool:
         """
         Ingest data using either multi-agent system or direct GPT tools.
         
         Args:
             file_path: Path to file to ingest
             use_agents: Whether to use multi-agent system
+            skip_upload: Skip uploading to OpenAI (assumes file already uploaded)
             
         Returns:
             Success status
@@ -141,23 +153,40 @@ class ImpactOSGPTCLI:
                 logger.info(f"Ingesting {file_path} via GPT tools")
                 
                 try:
-                    # Upload file with retry logic
-                    max_retries = 3
                     file_id = None
                     
-                    for attempt in range(max_retries):
-                        try:
-                            file_id = self.file_manager.upload_file(file_path)
-                            break
-                        except Exception as e:
-                            if attempt == max_retries - 1:
-                                raise
-                            logger.warning(f"Upload attempt {attempt + 1} failed: {e}")
-                            time.sleep(2)  # Wait before retry
-                    
-                    if not file_id:
-                        logger.error("Failed to upload file after all retries")
-                        return False
+                    if skip_upload:
+                        logger.info("Skipping file upload as requested")
+                        # Try to find existing file ID in database
+                        from pathlib import Path
+                        filename = Path(file_path).name
+                        existing_files = self.assistant_manager.data_store.get_all_files()
+                        for file_info in existing_files:
+                            if file_info.get('file_path', '').endswith(filename):
+                                file_id = file_info.get('openai_file_id')
+                                logger.info(f"Found existing file ID: {file_id}")
+                                break
+                        
+                        if not file_id:
+                            logger.error(f"No existing file ID found for {filename}. Remove --skip-upload to upload.")
+                            return False
+                    else:
+                        # Upload file with retry logic
+                        max_retries = 3
+                        
+                        for attempt in range(max_retries):
+                            try:
+                                file_id = self.file_manager.upload_file(file_path)
+                                break
+                            except Exception as e:
+                                if attempt == max_retries - 1:
+                                    raise
+                                logger.warning(f"Upload attempt {attempt + 1} failed: {e}")
+                                time.sleep(2)  # Wait before retry
+                        
+                        if not file_id:
+                            logger.error("Failed to upload file after all retries")
+                            return False
                     
                     # Process with assistant
                     instructions = """Please analyze this file and extract any salary, compensation, payroll, or impact data you find.
@@ -210,7 +239,7 @@ Be sure to include the actual numbers and values you see in the data."""
             logger.error(f"Ingestion error: {e}")
             return False
     
-    def query_data(self, question: str, use_agents: bool = True) -> str:
+    def query_data(self, question: str, use_agents: bool = True, force_chart: bool = False) -> str:
         """
         Query data using either multi-agent system or direct GPT tools.
         
@@ -221,41 +250,148 @@ Be sure to include the actual numbers and values you see in the data."""
         Returns:
             Answer string
         """
+        start_time = time.time()
+        
         try:
+                
             if use_agents and self.orchestrator:
                 # Use multi-agent system
                 logger.info("Processing query via multi-agent system")
-                result = self.orchestrator.query_data(question)
+                result = self.orchestrator.query_data(question, force_chart=force_chart)
                 
                 if result.get('status') == 'success':
                     answer = result.get('answer', 'No answer generated')
                     if result.get('visualization'):
                         answer += f"\n\n📊 Visualization recommended: {result['visualization'].get('chart_type')}"
+                    
+                    # Calculate processing time and log comprehensive event
+                    total_ms = int((time.time() - start_time) * 1000)
+                    
+                    try:
+                        db_adapter = self._get_db_adapter()
+                        db_adapter.log_ai_query_event(
+                            source="cli_gpt",
+                            question=question,
+                            answer=answer,
+                            status="ok",
+                            model="multi-agent",
+                            total_ms=total_ms,
+                            timings={"total_ms": total_ms, "multi_agent_processing_ms": total_ms},
+                            chart=result.get('visualization'),
+                            logs=f"Multi-agent processing completed successfully in {total_ms}ms",
+                            metadata={"interface": "cli_gpt", "system": "impactos-ai", "method": "multi_agent"}
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to log AI query event: {e}")
+                    
                     return answer
                 else:
-                    return f"Query failed: {result.get('error')}"
+                    error_msg = f"Query failed: {result.get('error')}"
+                    total_ms = int((time.time() - start_time) * 1000)
+                    
+                    # Log error event
+                    try:
+                        db_adapter = self._get_db_adapter()
+                        db_adapter.log_ai_query_event(
+                            source="cli_gpt",
+                            question=question,
+                            status="error",
+                            total_ms=total_ms,
+                            logs=f"Multi-agent processing failed after {total_ms}ms: {result.get('error', 'Unknown error')}",
+                            error=result.get('error'),
+                            metadata={"interface": "cli_gpt", "system": "impactos-ai", "method": "multi_agent"}
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to log error event: {e}")
+                    
+                    return error_msg
                     
             elif self.assistant_manager:
                 # Direct GPT assistant
                 logger.info("Processing query via GPT assistant")
-                result = self.assistant_manager.query_data(question)
+                result = self.assistant_manager.query_data(question, force_chart=force_chart)
                 
                 answer = result.get('content', 'No answer generated')
                 
-                # Add citations if available
-                if result.get('annotations'):
-                    answer += "\n\nSources:"
-                    for i, ann in enumerate(result['annotations'], 1):
-                        answer += f"\n[{i}] {ann.get('quote', '')[:100]}..."
+                # Add enhanced citations and provenance if available
+                provenance_info = self._format_provenance_info(result)
+                if provenance_info:
+                    answer += f"\n\n{provenance_info}"
+                
+                # Add framework badges to response
+                answer = self._add_framework_badges(answer)
+                
+                # Add chart visualization info if available (for CLI display)
+                if result.get('visualization') and not force_chart:
+                    # Only show text description if not forcing structured chart output
+                    chart_info = result['visualization']
+                    if chart_info.get('description'):
+                        answer += f"\n\n📊 Visualization: {chart_info.get('description', 'Chart recommended')}"
+                
+                # Calculate processing time and log comprehensive event
+                total_ms = int((time.time() - start_time) * 1000)
+                
+                try:
+                    db_adapter = self._get_db_adapter()
+                    db_adapter.log_ai_query_event(
+                        source="cli_gpt",
+                        question=question,
+                        answer=answer,
+                        status="ok",
+                        model="gpt-assistant",
+                        total_ms=total_ms,
+                        timings={"total_ms": total_ms, "gpt_assistant_processing_ms": total_ms},
+                        chart=result.get('visualization'),
+                        logs=f"GPT assistant processing completed successfully in {total_ms}ms",
+                        metadata={"interface": "cli_gpt", "system": "impactos-ai", "method": "gpt_assistant"}
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to log AI query event: {e}")
                 
                 return answer
                 
             else:
-                return "No query system available. Please check API keys."
+                error_msg = "No query system available. Please check API keys."
+                total_ms = int((time.time() - start_time) * 1000)
+                
+                # Log error event
+                try:
+                    db_adapter = self._get_db_adapter()
+                    db_adapter.log_ai_query_event(
+                        source="cli_gpt",
+                        question=question,
+                        status="error",
+                        total_ms=total_ms,
+                        logs=f"No query system available for processing after {total_ms}ms",
+                        error="No query system available",
+                        metadata={"interface": "cli_gpt", "system": "impactos-ai"}
+                    )
+                except Exception as e:
+                    logger.debug(f"Failed to log error event: {e}")
+                
+                return error_msg
                 
         except Exception as e:
             logger.error(f"Query error: {e}")
-            return f"Error processing query: {e}"
+            error_msg = f"Error processing query: {e}"
+            total_ms = int((time.time() - start_time) * 1000)
+            
+            # Log error event
+            try:
+                db_adapter = self._get_db_adapter()
+                db_adapter.log_ai_query_event(
+                    source="cli_gpt",
+                    question=question,
+                    status="error",
+                    total_ms=total_ms,
+                    logs=f"Exception occurred during processing after {total_ms}ms: {str(e)}",
+                    error=str(e),
+                    metadata={"interface": "cli_gpt", "system": "impactos-ai"}
+                )
+            except Exception as log_e:
+                logger.debug(f"Failed to log error event: {log_e}")
+            
+            return error_msg
     
     def show_status(self):
         """Display system status."""
@@ -401,6 +537,168 @@ Be sure to include the actual numbers and values you see in the data."""
             except Exception as e:
                 print(f"Error: {e}")
     
+    def _format_provenance_info(self, result: Dict[str, Any]) -> str:
+        """Format provenance and citation information for display."""
+        provenance_parts = []
+        
+        # Enhanced Citations
+        if result.get('annotations'):
+            provenance_parts.append("=== DATA CITATIONS ===")
+            for i, ann in enumerate(result['annotations'], 1):
+                citation_info = f"[{i}] File ID: {ann.get('file_id', 'Unknown')}"
+                
+                if ann.get('filename'):
+                    citation_info += f" ({ann['filename']})"
+                if ann.get('file_type'):
+                    citation_info += f" - Type: {ann['file_type'].upper()}"
+                if ann.get('upload_time'):
+                    citation_info += f" - Uploaded: {ann['upload_time'][:10]}"
+                
+                provenance_parts.append(citation_info)
+                
+                if ann.get('quote'):
+                    quote_preview = ann['quote'][:200] + "..." if len(ann['quote']) > 200 else ann['quote']
+                    provenance_parts.append(f"    Quote: \"{quote_preview}\"")
+                
+                provenance_parts.append("")  # Empty line
+        
+        # Provenance Information
+        if result.get('provenance'):
+            prov = result['provenance']
+            
+            if prov.get('data_sources'):
+                provenance_parts.append("=== DATA SOURCES ===")
+                for source in prov['data_sources']:
+                    provenance_parts.append(f"• {source}")
+                provenance_parts.append("")
+            
+            if prov.get('operations_performed'):
+                provenance_parts.append("=== OPERATIONS PERFORMED ===")
+                for operation in prov['operations_performed']:
+                    provenance_parts.append(f"• {operation}")
+                provenance_parts.append("")
+            
+            if prov.get('original_data'):
+                provenance_parts.append("=== ORIGINAL DATA FOUND ===")
+                provenance_parts.append(prov['original_data'])
+                provenance_parts.append("")
+            
+            if prov.get('data_limitations'):
+                provenance_parts.append("=== DATA LIMITATIONS ===")
+                provenance_parts.append(prov['data_limitations'])
+        
+        return "\n".join(provenance_parts) if provenance_parts else ""
+    
+    def _add_framework_badges(self, answer: str) -> str:
+        """Add compact framework badges to GPT Assistant responses."""
+        try:
+            # Import here to avoid circular imports
+            from frameworks import FrameworkMapper
+            
+            mapper = FrameworkMapper()
+            
+            # Define metric patterns and their likely framework mappings
+            badge_patterns = {
+                # Gender/diversity metrics
+                'gender pay gap': '[SDG5] [5.0] [WORKERS]',
+                'pay gap': '[SDG5] [5.0] [WORKERS]',
+                'diversity': '[SDG5] [10] [WORKERS]',
+                'gender equality': '[SDG5] [5.0] [WORKERS]',
+                
+                # Employment metrics
+                'employment': '[SDG8] [3.0] [NT1] [WORKERS]',
+                'jobs': '[SDG8] [3.0] [NT1] [WORKERS]',
+                'salary': '[SDG8] [3.0] [WORKERS]',
+                'training': '[SDG4] [2.0] [NT2] [WORKERS]',
+                'skills': '[SDG4] [3.3] [NT2] [WORKERS]',
+                
+                # Community engagement
+                'volunteering': '[SDG11] [8.1] [NT90] [COMMUNITY]',
+                'volunteer': '[SDG11] [8.1] [NT90] [COMMUNITY]',
+                'donation': '[SDG11] [8.2] [COMMUNITY]',
+                'charitable': '[SDG11] [8.2] [COMMUNITY]',
+                'community': '[SDG11] [8.0] [COMMUNITY]',
+                
+                # Environmental metrics  
+                'carbon': '[SDG13] [4.1] [NT4] [ENVIRONMENT]',
+                'emissions': '[SDG13] [4.1] [NT4] [ENVIRONMENT]',
+                'energy': '[SDG13] [4.1] [NT4] [ENVIRONMENT]',
+                'waste': '[SDG12] [4.2] [NT4] [ENVIRONMENT]',
+                'environmental': '[SDG13] [4.0] [NT4] [ENVIRONMENT]'
+            }
+            
+            # Find relevant badges for this answer
+            answer_lower = answer.lower()
+            relevant_badges = set()
+            
+            for pattern, badge in badge_patterns.items():
+                if pattern in answer_lower:
+                    relevant_badges.add(badge)
+            
+            # Add badges to the beginning of the answer if any found
+            if relevant_badges:
+                badges_text = " ".join(sorted(relevant_badges))
+                # Add badges after "Answer:" if present, or at the beginning
+                if answer.startswith("• Answer:"):
+                    answer = answer.replace("• Answer:", f"• Answer {badges_text}:", 1)
+                elif answer.startswith("Answer:"):
+                    answer = answer.replace("Answer:", f"Answer {badges_text}:", 1)
+                else:
+                    answer = f"{badges_text}\n\n{answer}"
+            
+            return answer
+            
+        except Exception as e:
+            logger.debug(f"Failed to add framework badges: {e}")
+            return answer  # Return original answer if badge addition fails
+    
+    def query_structured(self, question: str, force_chart: bool = False) -> Dict[str, Any]:
+        """Query data and return structured response compatible with web API.
+        Returns: {"answer": str, "show_chart": bool, "chart": dict or None}
+        """
+        try:
+            if self.assistant_manager:
+                # Get GPT Assistant response with force_chart
+                result = self.assistant_manager.query_data(question, force_chart=force_chart)
+                answer = result.get('content', 'No answer generated')
+                
+                # Add framework badges to response
+                answer = self._add_framework_badges(answer)
+                
+                # Check for structured chart data
+                visualization = result.get('visualization')
+                show_chart = False
+                chart_data = None
+                
+                if visualization:
+                    # Check if we have structured chart data (new format)
+                    if visualization.get('type') and visualization.get('data'):
+                        show_chart = True
+                        chart_data = visualization
+                    # Or if we have old format with description
+                    elif visualization.get('recommended'):
+                        show_chart = bool(force_chart)  # Only show if explicitly requested
+                
+                return {
+                    "answer": answer,
+                    "show_chart": show_chart,
+                    "chart": chart_data
+                }
+            else:
+                return {
+                    "answer": "GPT Assistant system not available",
+                    "show_chart": False,
+                    "chart": None
+                }
+                
+        except Exception as e:
+            logger.error(f"Structured query error: {e}")
+            return {
+                "answer": f"Error processing query: {e}",
+                "show_chart": False,
+                "chart": None
+            }
+    
     def cleanup(self):
         """Clean up resources."""
         try:
@@ -438,12 +736,18 @@ Examples:
     ingest_parser.add_argument('file_path', help='Path to file')
     ingest_parser.add_argument('--no-agents', action='store_true',
                               help='Use direct GPT tools instead of agents')
+    ingest_parser.add_argument('--skip-upload', action='store_true',
+                              help='Skip uploading file to OpenAI (assumes already uploaded)')
     
     # Query command
     query_parser = subparsers.add_parser('query', help='Query data')
     query_parser.add_argument('question', help='Natural language question')
     query_parser.add_argument('--no-agents', action='store_true',
                              help='Use direct GPT tools instead of agents')
+    query_parser.add_argument('--force-chart', action='store_true',
+                             help='Force chart generation if possible')
+    query_parser.add_argument('--json', action='store_true',
+                             help='Return structured JSON response for API compatibility')
     
     # Batch ingest
     batch_parser = subparsers.add_parser('batch-ingest', help='Ingest directory')
@@ -474,16 +778,28 @@ def main():
         if args.command == 'ingest':
             success = cli.ingest_data(
                 args.file_path,
-                use_agents=not args.no_agents
+                use_agents=not args.no_agents,
+                skip_upload=args.skip_upload
             )
             sys.exit(0 if success else 1)
             
         elif args.command == 'query':
-            answer = cli.query_data(
-                args.question,
-                use_agents=not args.no_agents
-            )
-            print(f"\n{answer}")
+            if args.json:
+                # Return structured JSON response
+                structured = cli.query_structured(
+                    args.question,
+                    force_chart=args.force_chart
+                )
+                import json
+                print(json.dumps(structured, indent=2))
+            else:
+                # Return normal text response
+                answer = cli.query_data(
+                    args.question,
+                    use_agents=not args.no_agents,
+                    force_chart=args.force_chart
+                )
+                print(f"\n{answer}")
             
         elif args.command == 'batch-ingest':
             cli.batch_ingest(args.directory)

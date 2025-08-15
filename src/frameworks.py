@@ -287,6 +287,85 @@ class FrameworkMapper:
             logger.error(f"Error applying framework mappings: {e}")
             return {}
     
+    def get_metric_frameworks(self, metric_id: int) -> Dict[str, List[Dict[str, str]]]:
+        """Get frameworks mapped to a specific metric with compact display info."""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    SELECT framework_code, framework_description
+                    FROM framework_mappings
+                    WHERE metric_id = ?
+                    ORDER BY framework_code
+                """, (metric_id,))
+                
+                mappings = cursor.fetchall()
+                result = {}
+                
+                for mapping in mappings:
+                    framework_code = mapping['framework_code']
+                    if ':' in framework_code:
+                        framework, category = framework_code.split(':', 1)
+                        
+                        if framework not in result:
+                            result[framework] = []
+                        
+                        # Get short display info
+                        display_info = self._get_framework_display_info(framework, category)
+                        result[framework].append(display_info)
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"Error getting metric frameworks: {e}")
+            return {}
+    
+    def _get_framework_display_info(self, framework: str, category: str) -> Dict[str, str]:
+        """Get compact display information for framework category."""
+        framework_def = self.frameworks.get(framework, {})
+        
+        if framework == "UK_SV_MODEL":
+            desc = framework_def.get('subcategories', {}).get(category) or \
+                   framework_def.get('categories', {}).get(category, category)
+            return {"code": category, "label": desc, "color": "blue"}
+        
+        elif framework == "UN_SDGS":
+            desc = framework_def.get('goals', {}).get(category, f"SDG {category}")
+            return {"code": f"SDG{category}", "label": desc, "color": "green"}
+        
+        elif framework == "TOMS":
+            desc = framework_def.get('themes', {}).get(category, category)
+            return {"code": category, "label": desc, "color": "orange"}
+        
+        elif framework == "B_CORP":
+            desc = framework_def.get('impact_areas', {}).get(category, category)
+            return {"code": category.upper(), "label": desc, "color": "purple"}
+        
+        return {"code": category, "label": category, "color": "gray"}
+    
+    def format_framework_badges(self, metric_id: int, compact: bool = True) -> str:
+        """Format framework mappings as compact badges/tags."""
+        frameworks = self.get_metric_frameworks(metric_id)
+        
+        if not frameworks:
+            return ""
+        
+        badges = []
+        for framework, categories in frameworks.items():
+            if compact:
+                # Show only most relevant category per framework
+                if categories:
+                    category = categories[0]  # Take first/primary mapping
+                    badges.append(f"[{category['code']}]")
+            else:
+                # Show all categories
+                for category in categories:
+                    badges.append(f"[{category['code']}: {category['label']}]")
+        
+        return " ".join(badges)
+    
     def get_framework_summary(self) -> Dict[str, Any]:
         """Get summary of framework mappings."""
         try:
